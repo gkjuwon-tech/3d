@@ -1,0 +1,14 @@
+# secrets — never commit API keys
+.env
+.env.*
+*.key
+secrets/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# blender / 3d working files
+*.blend1
+*.blend2
