@@ -130,14 +130,23 @@ def main():
             if disparity:
                 z_raw = span.max() + span.min() - z_raw
 
+            # The hull's own rendered depth is the baseline to beat. If a
+            # calibrated estimate cannot improve on the thing used to calibrate
+            # it, the estimator is contributing nothing on this view.
+            hull_hit = hull < BG
+            both = hit & hull_hit
+
             def err(z):
                 d = np.abs(z[hit] - gt[hit])
                 return {"mae": float(d.mean()),
                         "rmse": float(np.sqrt((d ** 2).mean())),
                         "p95": float(np.percentile(d, 95))}
 
+            hull_err = float(np.abs(hull[both] - gt[both]).mean())
             rows[view] = {"gt_fit": err(z_gt), "hull_fit": err(z_hull),
                           "raw": err(z_raw),
+                          "hull_baseline_mae": hull_err,
+                          "coverage": float(hit.mean()),
                           "affine_gt": [a_g, b_g], "affine_hull": [a_h, b_h]}
 
             origin, fwd = view_rays(info, ortho, res)
@@ -154,17 +163,20 @@ def main():
 
         print(f"\n=== {model}"
               f"{'  (disparity space)' if disparity else ''}")
-        print(f"{'view':<11}{'raw mae':>10}{'hull-fit mae':>14}"
-              f"{'gt-fit mae':>12}{'hull penalty':>14}")
+        print(f"{'view':<11}{'cover':>7}{'raw':>9}{'hull-fit':>10}"
+              f"{'gt-fit':>9}{'HULL ITSELF':>13}   verdict")
         for v, r in rows.items():
-            pen = r["hull_fit"]["mae"] - r["gt_fit"]["mae"]
-            print(f"{v:<11}{r['raw']['mae']:>10.5f}"
-                  f"{r['hull_fit']['mae']:>14.5f}{r['gt_fit']['mae']:>12.5f}"
-                  f"{pen:>14.5f}")
-        for key, label in (("raw", "raw"), ("hull_fit", "hull-fit"),
-                           ("gt_fit", "gt-fit")):
-            m = np.mean([r[key]["mae"] for r in rows.values()])
-            print(f"{'mean ' + label:<11}{m:>10.5f}")
+            base = r["hull_baseline_mae"]
+            win = "estimator" if r["hull_fit"]["mae"] < base else "hull"
+            print(f"{v:<11}{100*r['coverage']:>6.1f}%{r['raw']['mae']:>9.5f}"
+                  f"{r['hull_fit']['mae']:>10.5f}{r['gt_fit']['mae']:>9.5f}"
+                  f"{base:>13.5f}   {win}")
+        hb = np.mean([r["hull_baseline_mae"] for r in rows.values()])
+        print(f"{'mean':<11}{'':>7}"
+              f"{np.mean([r['raw']['mae'] for r in rows.values()]):>9.5f}"
+              f"{np.mean([r['hull_fit']['mae'] for r in rows.values()]):>10.5f}"
+              f"{np.mean([r['gt_fit']['mae'] for r in rows.values()]):>9.5f}"
+              f"{hb:>13.5f}")
 
     with open(os.path.join(args.out, "depth_report.json"), "w") as f:
         json.dump(report, f, indent=2)

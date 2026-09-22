@@ -83,6 +83,13 @@ def main():
 
             cos = np.clip((est[hit] * gt[hit]).sum(1), -1, 1)
             ang = np.degrees(np.arccos(cos))
+            # Baseline: assume every visible surface faces the camera. An
+            # estimate that does not beat this is not carrying information
+            # about the surface, whatever its output looks like.
+            flat = np.zeros_like(gt[hit])
+            flat[:, 2] = 1.0
+            ang_flat = np.degrees(np.arccos(
+                np.clip((flat * gt[hit]).sum(1), -1, 1)))
             rows[view] = {
                 "mean_deg": float(ang.mean()),
                 "median_deg": float(np.median(ang)),
@@ -90,16 +97,18 @@ def main():
                 "within_11_25": float((ang < 11.25).mean()),
                 "within_22_5": float((ang < 22.5).mean()),
                 "within_30": float((ang < 30.0).mean()),
+                "flat_baseline_deg": float(ang_flat.mean()),
+                "beats_baseline": bool(ang.mean() < ang_flat.mean()),
             }
         report[model] = {"per_view": rows, "axis_signs": list(signs_used)}
 
         print(f"\n=== {model}")
-        print(f"{'view':<11}{'mean':>8}{'median':>9}{'p95':>8}"
-              f"{'<11.25':>9}{'<22.5':>8}{'<30':>8}")
+        print(f"{'view':<11}{'mean':>8}{'median':>9}{'<22.5':>8}"
+              f"{'FLAT BASE':>11}   verdict")
         for v, r in rows.items():
             print(f"{v:<11}{r['mean_deg']:>8.2f}{r['median_deg']:>9.2f}"
-                  f"{r['p95_deg']:>8.2f}{100*r['within_11_25']:>8.1f}%"
-                  f"{100*r['within_22_5']:>7.1f}%{100*r['within_30']:>7.1f}%")
+                  f"{100*r['within_22_5']:>7.1f}%{r['flat_baseline_deg']:>11.2f}"
+                  f"   {'estimator' if r['beats_baseline'] else 'FLAT GUESS WINS'}")
         mean = np.mean([r["mean_deg"] for r in rows.values()])
         med = np.mean([r["median_deg"] for r in rows.values()])
         print(f"{'mean':<11}{mean:>8.2f}{med:>9.2f}")
