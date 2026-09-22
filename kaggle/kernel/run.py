@@ -28,22 +28,31 @@ def log(*a):
 
 
 def find_input_root():
-    """Locate the attached view set. The mount point is not assumed: a dataset
-    still processing when the kernel starts simply is not there, and the failure
-    reads as a missing file rather than a missing mount."""
+    """Locate the attached view set by walking the input tree.
+
+    The mount layout is not assumed. A dataset can land at
+    /kaggle/input/<slug> or nested under /kaggle/input/datasets/<owner>/<slug>
+    depending on how it was attached, and a dataset still processing when the
+    kernel starts does not appear at all. Searching and reporting beats
+    guessing a path and failing as a missing file.
+    """
     root = "/kaggle/input"
     if not os.path.isdir(root):
-        raise FileNotFoundError("/kaggle/input does not exist; no data attached")
-    entries = sorted(os.listdir(root))
-    log("attached datasets:", entries)
-    for e in entries:
-        d = os.path.join(root, e)
-        names = set(os.listdir(d)) if os.path.isdir(d) else set()
-        log(f"  {e}: {sorted(names)[:8]}")
+        raise FileNotFoundError("/kaggle/input does not exist; nothing attached")
+    seen = []
+    for cur, dirs, files in os.walk(root):
+        depth = cur[len(root):].count(os.sep)
+        if depth > 4:
+            dirs[:] = []
+            continue
+        names = set(dirs) | set(files)
+        seen.append(os.path.relpath(cur, root))
         if {"rgb", "rgb.zip"} & names:
-            return d
+            log(f"input root: {cur}  contains {sorted(names)[:8]}")
+            return cur
     raise FileNotFoundError(
-        f"no attached dataset contains rgb/ or rgb.zip; saw {entries}")
+        "no attached dataset contains rgb/ or rgb.zip; walked: "
+        + ", ".join(seen[:40]))
 
 
 def resolve_input():
