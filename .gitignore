@@ -15,3 +15,8 @@ __pycache__/
 
 # large downloaded assets — fetched by tools/fetch_assets.sh, not committed
 assets/
+
+# float passes are reproducible from tools/render_orthoviews.py in minutes and
+# run ~12 MB per view; the 8-bit passes and cameras.json are committed
+refs/*/depth/
+refs/*/normal/
