@@ -28,7 +28,7 @@ _PKGS = {
     "vggt": "git+https://github.com/facebookresearch/vggt.git",
     "da3": "depth-anything-3 addict",
 }
-_ONLY = _os.environ.get("ONLY", "da3").split(",")
+_ONLY = _os.environ.get("ONLY", "da3,vggt").split(",")
 for _job in _ONLY:
     if _job in _PKGS:
         print(f"[install] {_job}: {_PKGS[_job]}", flush=True)
@@ -43,7 +43,9 @@ import numpy as np
 from PIL import Image
 
 OUT = "/kaggle/working/est"
-VIEWS = ["01_front", "02_right", "03_back", "04_left", "05_top", "06_bottom"]
+# Discovered from the attached view set rather than hardcoded, so adding
+# auxiliary views does not need a kernel change.
+VIEWS = []
 manifest = {"models": {}, "views": VIEWS, "errors": {}, "notes": {}}
 
 
@@ -221,6 +223,11 @@ def main():
     os.makedirs(OUT, exist_ok=True)
 
     base = resolve_input()
+    names = sorted(f[:-4] for f in os.listdir(os.path.join(base, "rgb"))
+                   if f.endswith(".png"))
+    VIEWS[:] = names
+    manifest["views"] = names
+    log(f"views ({len(names)}): {names}")
     paths = {v: os.path.join(base, "rgb", f"{v}.png") for v in VIEWS}
     size = Image.open(paths[VIEWS[0]]).size[0]
     log(f"reference resolution {size}")
@@ -247,5 +254,5 @@ def main():
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("ONLY", "da3")
+    os.environ.setdefault("ONLY", "da3,vggt")
     main()

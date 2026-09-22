@@ -129,17 +129,26 @@ def main():
     # --- silhouette IoU -----------------------------------------------------
     if args.recon_views:
         ious = {}
+        skipped = []
         for view in meta["views"]:
-            a = np.asarray(Image.open(
-                os.path.join(args.views, "mask", f"{view}.png")).convert("L"))
-            b = np.asarray(Image.open(
-                os.path.join(args.recon_views, "mask", f"{view}.png")
-            ).convert("L"))
+            pa = os.path.join(args.views, "mask", f"{view}.png")
+            pb = os.path.join(args.recon_views, "mask", f"{view}.png")
+            if not (os.path.exists(pa) and os.path.exists(pb)):
+                # a reconstruction may have been rendered from fewer views than
+                # the reference set holds; score the overlap rather than fail
+                skipped.append(view)
+                continue
+            a = np.asarray(Image.open(pa).convert("L"))
+            b = np.asarray(Image.open(pb).convert("L"))
             A, B = a > 127, b > 127
             inter = np.logical_and(A, B).sum()
             union = np.logical_or(A, B).sum()
             ious[view] = float(inter) / float(union)
         results["silhouette_iou"] = ious
+        if skipped:
+            results["silhouette_iou_skipped"] = skipped
+            print(f"note: no reconstruction render for {len(skipped)} view(s): "
+                  + ", ".join(skipped))
 
     # --- containment --------------------------------------------------------
     if args.occ:
