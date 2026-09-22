@@ -82,16 +82,24 @@ def main():
     units_per_px = ortho / res
 
     extents = {}
+    stats = {}
+    ok_depth = ok_normal = True
     print(f"{'view':<11}{'mask px':>10}{'cover%':>8}"
           f"{'width':>9}{'height':>9}{'depth min':>11}{'depth max':>11}"
-          f"{'|n| err':>10}")
+          f"{'|n| err':>10}{'bbox':>7}")
 
     for view, info in meta["views"].items():
         mask = load_pixels(os.path.join(root, "mask", f"{view}.png"))[..., 0]
         depth = load_pixels(os.path.join(root, "depth", f"{view}.exr"))[..., 0]
         normal = load_pixels(os.path.join(root, "normal", f"{view}.exr"))[..., :3]
 
+        # Extents come from the anti-aliased mask, which carries sub-pixel
+        # silhouette information. Float-pass statistics come from the geometry
+        # pass's own coverage: anything still at the background sentinel was
+        # never hit, and the pass is point-sampled so there is no blended edge
+        # to exclude.
         m = mask > 0.5
+        solid = depth < 1e9
         n_px = int(m.sum())
         ys, xs = np.nonzero(m)
         w_px = xs.max() - xs.min() + 1
@@ -99,21 +107,29 @@ def main():
         width = w_px * units_per_px
         height = h_px * units_per_px
 
-        d_in = depth[m]
+        d_in = depth[solid]
         d_lo, d_hi = float(d_in.min()), float(d_in.max())
 
-        nn = normal[m]
+        nn = normal[solid]
         norms = np.linalg.norm(nn, axis=1)
         n_err = float(np.abs(norms - 1.0).max())
 
         extents[view] = (width, height)
+        # the camera sits 2.0 from the origin, so depth must land inside
+        # 2.0 +/- half the normalized bounding box along the view axis
+        half = max(meta["normalization"]["normalized_size"]) / 2 + 1e-3
+        in_box = (d_lo >= 2.0 - half) and (d_hi <= 2.0 + half)
         print(f"{view:<11}{n_px:>10,}{100.0*n_px/m.size:>7.2f}%"
               f"{width:>9.4f}{height:>9.4f}{d_lo:>11.4f}{d_hi:>11.4f}"
-              f"{n_err:>10.5f}")
+              f"{n_err:>10.5f}{'OK' if in_box else 'FAIL':>7}")
+        ok_depth = ok_depth and in_box
+        ok_normal = ok_normal and n_err < 1e-3
+        stats[view] = {"n_err_mean": float(np.abs(norms - 1.0).mean()),
+                       "n_err_max": n_err}
 
         # depth preview, normalized across the object's own depth range
         dv = np.zeros_like(depth)
-        dv[m] = 1.0 - (d_in - d_lo) / max(d_hi - d_lo, 1e-9)
+        dv[m] = 1.0 - (np.clip(depth[m], d_lo, d_hi) - d_lo) / max(d_hi - d_lo, 1e-9)
         save_rgb(np.repeat(dv[..., None], 3, axis=2),
                  os.path.join(root, "preview", f"{view}_depth.png"))
 
@@ -147,7 +163,14 @@ def main():
 
     box = meta["normalization"]["normalized_size"]
     print(f"\nnormalized bbox: {['%.4f' % b for b in box]}")
-    print("alignment:", "PASS" if ok else "FAIL")
+    print("alignment :", "PASS" if ok else "FAIL")
+    print("depth     :", "PASS" if ok_depth else "FAIL")
+    worst = max(stats.values(), key=lambda s: s["n_err_max"])
+    print(f"normals   : {'PASS' if ok_normal else 'FAIL'}"
+          f"   (worst |n|-1: max {worst['n_err_max']:.2e}, "
+          f"mean {worst['n_err_mean']:.2e})")
+    if not (ok and ok_depth and ok_normal):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

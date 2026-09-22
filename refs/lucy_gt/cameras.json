@@ -1,0 +1,351 @@
+{
+  "mesh": "../assets/lucy_le.ply",
+  "resolution": [
+    2048,
+    2048
+  ],
+  "samples": 128,
+  "faces": 28055728,
+  "vertices": 14027872,
+  "normalization": {
+    "source_bbox_min": [
+      -1155.670166015625,
+      -145.3544464111328,
+      -605.892822265625
+    ],
+    "source_bbox_max": [
+      -225.841064453125,
+      388.4171142578125,
+      991.14599609375
+    ],
+    "source_size": [
+      929.8291015625,
+      533.7715454101562,
+      1597.038818359375
+    ],
+    "applied_scale": 0.000626158856318403,
+    "applied_offset": [
+      0.4325227439403534,
+      -0.07609792053699493,
+      -0.12061484158039093
+    ],
+    "normalized_size": [
+      0.5822207268059433,
+      0.33422578040933,
+      1.0
+    ]
+  },
+  "yaw_deg": 180.0,
+  "ortho_scale": 1.1,
+  "depth_units": "normalized object units; longest bbox axis == 1.0",
+  "normal_space": "world",
+  "background": "#808080",
+  "views": {
+    "01_front": {
+      "type": "ORTHO",
+      "ortho_scale": 1.1,
+      "location": [
+        0.0,
+        -2.0,
+        0.0
+      ],
+      "rotation_euler_deg": [
+        90,
+        0,
+        0
+      ],
+      "matrix_world": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          -4.371138828673793e-08,
+          -1.0,
+          -2.0
+        ],
+        [
+          0.0,
+          1.0,
+          -4.371138828673793e-08,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "view_direction": [
+        0.0,
+        1.0,
+        4.371138828673793e-08
+      ],
+      "outputs": {
+        "rgb": "rgb/01_front.png",
+        "mask": "mask/01_front.png",
+        "depth": "depth/01_front.exr",
+        "normal": "normal/01_front.exr"
+      }
+    },
+    "02_right": {
+      "type": "ORTHO",
+      "ortho_scale": 1.1,
+      "location": [
+        2.0,
+        0.0,
+        0.0
+      ],
+      "rotation_euler_deg": [
+        90,
+        0,
+        90
+      ],
+      "matrix_world": [
+        [
+          -4.371138828673793e-08,
+          4.371138828673793e-08,
+          1.0,
+          2.0
+        ],
+        [
+          1.0,
+          1.910685676922942e-15,
+          4.371138828673793e-08,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          -4.371138828673793e-08,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "view_direction": [
+        -1.0,
+        -4.371138828673793e-08,
+        4.371138828673793e-08
+      ],
+      "outputs": {
+        "rgb": "rgb/02_right.png",
+        "mask": "mask/02_right.png",
+        "depth": "depth/02_right.exr",
+        "normal": "normal/02_right.exr"
+      }
+    },
+    "03_back": {
+      "type": "ORTHO",
+      "ortho_scale": 1.1,
+      "location": [
+        0.0,
+        2.0,
+        0.0
+      ],
+      "rotation_euler_deg": [
+        90,
+        0,
+        180
+      ],
+      "matrix_world": [
+        [
+          -1.0,
+          -3.821371353845884e-15,
+          -8.742277657347586e-08,
+          0.0
+        ],
+        [
+          -8.742277657347586e-08,
+          4.371138828673793e-08,
+          1.0,
+          2.0
+        ],
+        [
+          0.0,
+          1.0,
+          -4.371138828673793e-08,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "view_direction": [
+        8.742277657347586e-08,
+        -1.0,
+        4.371138828673793e-08
+      ],
+      "outputs": {
+        "rgb": "rgb/03_back.png",
+        "mask": "mask/03_back.png",
+        "depth": "depth/03_back.exr",
+        "normal": "normal/03_back.exr"
+      }
+    },
+    "04_left": {
+      "type": "ORTHO",
+      "ortho_scale": 1.1,
+      "location": [
+        -2.0,
+        0.0,
+        0.0
+      ],
+      "rotation_euler_deg": [
+        90,
+        0,
+        -90
+      ],
+      "matrix_world": [
+        [
+          -4.371138828673793e-08,
+          -4.371138828673793e-08,
+          -1.0,
+          -2.0
+        ],
+        [
+          -1.0,
+          1.910685676922942e-15,
+          4.371138828673793e-08,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          -4.371138828673793e-08,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "view_direction": [
+        1.0,
+        -4.371138828673793e-08,
+        4.371138828673793e-08
+      ],
+      "outputs": {
+        "rgb": "rgb/04_left.png",
+        "mask": "mask/04_left.png",
+        "depth": "depth/04_left.exr",
+        "normal": "normal/04_left.exr"
+      }
+    },
+    "05_top": {
+      "type": "ORTHO",
+      "ortho_scale": 1.1,
+      "location": [
+        0.0,
+        0.0,
+        2.0
+      ],
+      "rotation_euler_deg": [
+        0,
+        0,
+        0
+      ],
+      "matrix_world": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          2.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "view_direction": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "outputs": {
+        "rgb": "rgb/05_top.png",
+        "mask": "mask/05_top.png",
+        "depth": "depth/05_top.exr",
+        "normal": "normal/05_top.exr"
+      }
+    },
+    "06_bottom": {
+      "type": "ORTHO",
+      "ortho_scale": 1.1,
+      "location": [
+        0.0,
+        0.0,
+        -2.0
+      ],
+      "rotation_euler_deg": [
+        180,
+        0,
+        0
+      ],
+      "matrix_world": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          -1.0,
+          8.742277657347586e-08,
+          0.0
+        ],
+        [
+          0.0,
+          -8.742277657347586e-08,
+          -1.0,
+          -2.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "view_direction": [
+        0.0,
+        -8.742277657347586e-08,
+        1.0
+      ],
+      "outputs": {
+        "rgb": "rgb/06_bottom.png",
+        "mask": "mask/06_bottom.png",
+        "depth": "depth/06_bottom.exr",
+        "normal": "normal/06_bottom.exr"
+      }
+    }
+  }
+}

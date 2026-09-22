@@ -2,11 +2,25 @@
 """Render a mesh as six axis-aligned orthographic views, with exact ground
 truth for every signal the reconstruction pipeline consumes.
 
+Each view is rendered twice, because a beauty pass and a geometry pass want
+opposite things from the pixel filter:
+
+  beauty pass   wide filter, many samples, denoised -> a clean image
+  geometry pass one sample, point filter, no denoise -> exact depth/normals
+
+Filtering a depth buffer averages foreground depth with the background
+sentinel wherever a pixel straddles the silhouette, and averages unit normals
+into non-unit ones wherever a pixel spans curvature. On this mesh a pixel
+covers several triangles, so that is most of the frame. Those blended edge
+samples are precisely the flying pixels that put skirts on a back-projected
+depth map, so ground truth must be point-sampled or it carries the artifact it
+exists to measure.
+
 Per view it writes:
   rgb/<view>.png      flat-lit beauty render on a #808080 plate
-  mask/<view>.png     exact silhouette (render alpha)
-  depth/<view>.exr    orthographic depth in normalized object units, float32
-  normal/<view>.exr   world-space surface normal, float32
+  mask/<view>.png     anti-aliased silhouette, for sub-pixel extent fitting
+  depth/<view>.exr    orthographic depth, point-sampled, float32
+  normal/<view>.exr   world-space surface normal, point-sampled unit vectors
   cameras.json        per-view camera basis + ortho scale + normalization
 
 All six views share one ortho scale and one centered object, so the frames are
@@ -21,6 +35,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import sys
 
 import bpy
@@ -197,6 +212,8 @@ def setup_compositor(scene, out_dir):
         n.format.color_depth = depth
         return n
 
+    scratch = os.path.join(out_dir, ".unused")
+
     rgb = file_out("rgb", "PNG", "RGB", "8")
     tree.links.new(over.outputs[0], rgb.inputs[0])
 
@@ -211,7 +228,31 @@ def setup_compositor(scene, out_dir):
     normal.format.exr_codec = "ZIP"
     tree.links.new(rl.outputs["Normal"], normal.inputs[0])
 
-    return {"rgb": rgb, "mask": mask, "depth": depth, "normal": normal}
+    return {"rgb": rgb, "mask": mask, "depth": depth, "normal": normal,
+            "_scratch": scratch, "_out": out_dir}
+
+
+def set_pass(scene, nodes, which, samples):
+    """Point the outputs we do not want at a scratch directory, and set the
+    sampling and pixel filter this pass needs."""
+    beauty = which == "beauty"
+    if beauty:
+        scene.cycles.samples = samples
+        scene.cycles.use_denoising = True
+        scene.render.filter_size = 1.5
+        keep, drop = ("rgb", "mask"), ("depth", "normal")
+    else:
+        scene.cycles.samples = 1
+        scene.cycles.use_denoising = False
+        # A filter this narrow is a point sample at the pixel centre, which is
+        # what makes the depth and normal exact rather than blended.
+        scene.render.filter_size = 0.01
+        keep, drop = ("depth", "normal"), ("rgb", "mask")
+    for k in keep:
+        nodes[k].base_path = os.path.join(nodes["_out"], k)
+    for k in drop:
+        nodes[k].base_path = os.path.join(nodes["_scratch"], k)
+    return keep
 
 
 def setup_camera(scene, ortho_scale):
@@ -280,16 +321,20 @@ def main():
         bpy.context.view_layer.update()
 
         for key, node in nodes.items():
-            node.file_slots[0].path = view + "_"
+            if not key.startswith("_"):
+                node.file_slots[0].path = view + "_"
 
-        print(f"[render] {view}  dir={direction}", flush=True)
-        bpy.ops.render.render(write_still=False)
-
+        ext_of = {"rgb": ".png", "mask": ".png",
+                  "depth": ".exr", "normal": ".exr"}
         paths = {}
-        for key, ext in (("rgb", ".png"), ("mask", ".png"),
-                         ("depth", ".exr"), ("normal", ".exr")):
-            p = rename_frame_output(os.path.join(out, key), view, ext)
-            paths[key] = os.path.relpath(p, out) if p else None
+        for which in ("geometry", "beauty"):
+            written = set_pass(scene, nodes, which, args.samples)
+            print(f"[render] {view:<10} {which:<8} dir={direction}", flush=True)
+            bpy.ops.render.render(write_still=False)
+            for key in written:
+                p = rename_frame_output(os.path.join(out, key), view,
+                                        ext_of[key])
+                paths[key] = os.path.relpath(p, out) if p else None
 
         m = cam.matrix_world
         cameras[view] = {
@@ -315,9 +360,13 @@ def main():
         "ortho_scale": ortho_scale,
         "depth_units": "normalized object units; longest bbox axis == 1.0",
         "normal_space": "world",
+        "geometry_pass": "1 sample, filter_size 0.01 (point sampled), no denoise",
+        "beauty_pass": f"{args.samples} samples, filter_size 1.5, denoised",
+        "background_depth": 1e10,
         "background": "#808080",
         "views": cameras,
     }
+    shutil.rmtree(nodes["_scratch"], ignore_errors=True)
     with open(os.path.join(out, "cameras.json"), "w") as f:
         json.dump(meta, f, indent=2)
     print("[done  ] " + out, flush=True)
