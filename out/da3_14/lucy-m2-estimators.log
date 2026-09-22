@@ -1,0 +1,192 @@
+[{"stream_name":"stdout","time":0.94212013,"data":"[install] da3: depth-anything-3 addict\n"}
+,{"stream_name":"stdout","time":34.496491869,"data":"opencv-contrib-python 4.13.0.92 requires numpy\u003e=2; python_version \u003e= \"3.9\", but you have numpy 1.26.4 which is incompatible.\n"}
+,{"stream_name":"stdout","time":34.49655678,"data":"shap 0.51.0 requires numpy\u003e=2, but you have numpy 1.26.4 which is incompatible.\n"}
+,{"stream_name":"stdout","time":40.169731472,"data":"[11:08:28] torch 2.10.0+cu128 cuda True\n"}
+,{"stream_name":"stdout","time":40.212857153,"data":"[11:08:28] gpu: Tesla T4\n"}
+,{"stream_name":"stdout","time":40.260566929,"data":"[11:08:28] input root: /kaggle/input/datasets/gk1212/lucy-m2-views\n"}
+,{"stream_name":"stdout","time":40.291373464,"data":"[11:08:28] views (14): ['01_front', '02_right', '03_back', '04_left', '05_top', '06_bottom', '07_az45_up', '08_az135_up', '09_az225_up', '10_az315_up', '11_az45_dn', '12_az135_dn', '13_az225_dn', '14_az315_dn']\n"}
+,{"stream_name":"stdout","time":40.395075172,"data":"[11:08:28] reference resolution 2048\n"}
+,{"stream_name":"stdout","time":40.39510212,"data":"[11:08:28] -- skipping moge2\n"}
+,{"stream_name":"stdout","time":40.39510849,"data":"[11:08:28] -- skipping vggt\n"}
+,{"stream_name":"stdout","time":40.395405619,"data":"[11:08:28] == depth-anything/DA3-LARGE (multi-view)  package exposes: []\n"}
+,{"stream_name":"stderr","time":41.811192373,"data":"/usr/local/lib/python3.12/dist-packages/moviepy/config_defaults.py:47: SyntaxWarning: invalid escape sequence '\\P'\n"}
+,{"stream_name":"stderr","time":41.811245885,"data":"  IMAGEMAGICK_BINARY = r\"C:\\Program Files\\ImageMagick-6.8.8-Q16\\magick.exe\"\n"}
+,{"stream_name":"stderr","time":41.938307541,"data":"/usr/local/lib/python3.12/dist-packages/moviepy/video/io/ffmpeg_reader.py:294: SyntaxWarning: invalid escape sequence '\\d'\n"}
+,{"stream_name":"stderr","time":41.938331969000004,"data":"  lines_video = [l for l in lines if ' Video: ' in l and re.search('\\d+x\\d+', l)]\n"}
+,{"stream_name":"stderr","time":41.93863488,"data":"/usr/local/lib/python3.12/dist-packages/moviepy/video/io/ffmpeg_reader.py:367: SyntaxWarning: invalid escape sequence '\\d'\n"}
+,{"stream_name":"stderr","time":41.938651229,"data":"  rotation_lines = [l for l in lines if 'rotate          :' in l and re.search('\\d+$', l)]\n"}
+,{"stream_name":"stderr","time":41.938657766,"data":"/usr/local/lib/python3.12/dist-packages/moviepy/video/io/ffmpeg_reader.py:370: SyntaxWarning: invalid escape sequence '\\d'\n"}
+,{"stream_name":"stderr","time":41.938664626,"data":"  match = re.search('\\d+$', rotation_line)\n"}
+,{"stream_name":"stderr","time":44.719602277,"data":"error: XDG_RUNTIME_DIR not set in the environment.\n"}
+,{"stream_name":"stderr","time":44.801061545,"data":"ALSA lib confmisc.c:855:(parse_card) cannot find card '0'\n"}
+,{"stream_name":"stderr","time":44.801642788,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":44.801655731,"data":"ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings\n"}
+,{"stream_name":"stderr","time":44.801678342,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":44.801684976,"data":"ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name\n"}
+,{"stream_name":"stderr","time":44.80169061,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":44.801696145,"data":"ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory\n"}
+,{"stream_name":"stderr","time":44.801712961,"data":"ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default\n"}
+,{"stream_name":"stderr","time":44.909739061,"data":"ALSA lib confmisc.c:855:(parse_card) cannot find card '0'\n"}
+,{"stream_name":"stderr","time":44.909777286,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":44.909783164,"data":"ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings\n"}
+,{"stream_name":"stderr","time":44.909787266,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":44.909791253,"data":"ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name\n"}
+,{"stream_name":"stderr","time":44.909794741,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":44.909798254,"data":"ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory\n"}
+,{"stream_name":"stderr","time":44.909801866,"data":"ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default\n"}
+,{"stream_name":"stdout","time":45.152199419,"data":"\u001b[93m[WARN ] Dependency `gsplat` is required for rendering 3DGS. Install via: pip install git+https://github.com/nerfstudio-project/gsplat.git@0b4dddf04cb687367602c01196913cde6a743d70\u001b[0m\n"}
+,{"stream_name":"stderr","time":53.26053923,"data":"Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n"}
+,{"stream_name":"stdout","time":53.470452548,"data":"\u001b[97m[INFO ] using MLP layer as FFN\u001b[0m\n"}
+,{"stream_name":"stdout","time":67.916120545,"data":"\u001b[97m[INFO ] Processed Images Done taking 0.4586296081542969 seconds. Shape:  torch.Size([14, 3, 504, 504])\u001b[0m\n"}
+,{"stream_name":"stdout","time":68.564841441,"data":"\u001b[97m[INFO ] Selecting reference view using strategy: saddle_balanced\u001b[0m\n"}
+,{"stream_name":"stdout","time":71.495802904,"data":"[11:08:59]    OOM at fp16; retrying on DA3-BASE\n"}
+,{"stream_name":"stdout","time":72.020115328,"data":"\u001b[97m[INFO ] using MLP layer as FFN\u001b[0m\n"}
+,{"stream_name":"stdout","time":78.17103819,"data":"\u001b[97m[INFO ] Processed Images Done taking 0.287337064743042 seconds. Shape:  torch.Size([14, 3, 504, 504])\u001b[0m\n"}
+,{"stream_name":"stdout","time":78.233632177,"data":"\u001b[97m[INFO ] Selecting reference view using strategy: saddle_balanced\u001b[0m\n"}
+,{"stream_name":"stdout","time":79.194214966,"data":"[11:09:07] !! da3 FAILED\n"}
+,{"stream_name":"stderr","time":79.195743508,"data":"Traceback (most recent call last):\n"}
+,{"stream_name":"stderr","time":79.19727239,"data":"  File \"/kaggle/src/script.py\", line 197, in run_da3\n"}
+,{"stream_name":"stderr","time":79.197285235,"data":"    pred = model.inference(imgs)\n"}
+,{"stream_name":"stderr","time":79.197290627,"data":"           ^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197295593,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/api.py\", line 209, in inference\n"}
+,{"stream_name":"stderr","time":79.197300949,"data":"    raw_output = self._run_model_forward(\n"}
+,{"stream_name":"stderr","time":79.197305826,"data":"                 ^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.19731112,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/api.py\", line 384, in _run_model_forward\n"}
+,{"stream_name":"stderr","time":79.197316668,"data":"    output = self.forward(imgs, ex_t, in_t, feat_layers, infer_gs, use_ray_pose, ref_view_strategy)\n"}
+,{"stream_name":"stderr","time":79.197329854,"data":"             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197358275,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py\", line 124, in decorate_context\n"}
+,{"stream_name":"stderr","time":79.197363156,"data":"    return func(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.197366795,"data":"           ^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197370288,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/api.py\", line 129, in forward\n"}
+,{"stream_name":"stderr","time":79.197374669,"data":"    return self.model(\n"}
+,{"stream_name":"stderr","time":79.197378674,"data":"           ^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.19738265,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1776, in _wrapped_call_impl\n"}
+,{"stream_name":"stderr","time":79.197387048,"data":"    return self._call_impl(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.19739116,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197394804,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1787, in _call_impl\n"}
+,{"stream_name":"stderr","time":79.197398576,"data":"    return forward_call(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.197402158,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197405719,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/da3.py\", line 132, in forward\n"}
+,{"stream_name":"stderr","time":79.197409563,"data":"    feats, aux_feats = self.backbone(\n"}
+,{"stream_name":"stderr","time":79.197412996,"data":"                       ^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197416506,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1776, in _wrapped_call_impl\n"}
+,{"stream_name":"stderr","time":79.197420376,"data":"    return self._call_impl(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.197424,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197428118,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1787, in _call_impl\n"}
+,{"stream_name":"stderr","time":79.197432641,"data":"    return forward_call(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.197436893,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197441441,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/dinov2.py\", line 60, in forward\n"}
+,{"stream_name":"stderr","time":79.197446063,"data":"    return self.pretrained.get_intermediate_layers(\n"}
+,{"stream_name":"stderr","time":79.197452303,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.19745679,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/vision_transformer.py\", line 379, in get_intermediate_layers\n"}
+,{"stream_name":"stderr","time":79.197460816,"data":"    outputs, aux_outputs = self._get_intermediate_layers_not_chunked(\n"}
+,{"stream_name":"stderr","time":79.197464308,"data":"                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197468053,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/vision_transformer.py\", line 334, in _get_intermediate_layers_not_chunked\n"}
+,{"stream_name":"stderr","time":79.197476166,"data":"    x = self.process_attention(\n"}
+,{"stream_name":"stderr","time":79.197479752,"data":"        ^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197483218,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/vision_transformer.py\", line 364, in process_attention\n"}
+,{"stream_name":"stderr","time":79.197487228,"data":"    x = block(x, pos=pos, attn_mask=attn_mask)\n"}
+,{"stream_name":"stderr","time":79.197491383,"data":"        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197495488,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1776, in _wrapped_call_impl\n"}
+,{"stream_name":"stderr","time":79.197499241,"data":"    return self._call_impl(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.197503349,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197507869,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1787, in _call_impl\n"}
+,{"stream_name":"stderr","time":79.19751232,"data":"    return forward_call(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.19751624,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197520223,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/layers/block.py\", line 101, in forward\n"}
+,{"stream_name":"stderr","time":79.197524469,"data":"    x = x + attn_residual_func(x, pos=pos, attn_mask=attn_mask)\n"}
+,{"stream_name":"stderr","time":79.197528881,"data":"            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197533058,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/layers/block.py\", line 79, in attn_residual_func\n"}
+,{"stream_name":"stderr","time":79.19753779,"data":"    return self.ls1(self.attn(self.norm1(x), pos=pos, attn_mask=attn_mask))\n"}
+,{"stream_name":"stderr","time":79.197542249,"data":"                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197546864,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1776, in _wrapped_call_impl\n"}
+,{"stream_name":"stderr","time":79.197551777,"data":"    return self._call_impl(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.197556724,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197560364,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1787, in _call_impl\n"}
+,{"stream_name":"stderr","time":79.197564767,"data":"    return forward_call(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.197569151,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197573516,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/layers/attention.py\", line 60, in forward\n"}
+,{"stream_name":"stderr","time":79.197577439,"data":"    x = F.scaled_dot_product_attention(\n"}
+,{"stream_name":"stderr","time":79.197581022,"data":"        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.197585621,"data":"torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 19.65 GiB. GPU 0 has a total capacity of 14.56 GiB of which 11.69 GiB is free. Including non-PyTorch memory, this process has 2.87 GiB memory in use. Of the allocated memory 2.60 GiB is allocated by PyTorch, and 147.76 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)\n"}
+,{"stream_name":"stderr","time":79.197597772,"data":"\n"}
+,{"stream_name":"stderr","time":79.19760127,"data":"During handling of the above exception, another exception occurred:\n"}
+,{"stream_name":"stderr","time":79.19760497,"data":"\n"}
+,{"stream_name":"stderr","time":79.19760827,"data":"Traceback (most recent call last):\n"}
+,{"stream_name":"stderr","time":79.200076844,"data":"  File \"/kaggle/src/script.py\", line 256, in main\n"}
+,{"stream_name":"stderr","time":79.200095288,"data":"    fn()\n"}
+,{"stream_name":"stderr","time":79.200100185,"data":"  File \"/kaggle/src/script.py\", line 250, in \u003clambda\u003e\n"}
+,{"stream_name":"stderr","time":79.200105037,"data":"    (\"da3\", lambda: run_da3(paths, size, device)))\n"}
+,{"stream_name":"stderr","time":79.200109546,"data":"                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200113822,"data":"  File \"/kaggle/src/script.py\", line 205, in run_da3\n"}
+,{"stream_name":"stderr","time":79.200118179,"data":"    pred = model.inference(imgs)\n"}
+,{"stream_name":"stderr","time":79.20012237,"data":"           ^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200126641,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/api.py\", line 209, in inference\n"}
+,{"stream_name":"stderr","time":79.200131237,"data":"    raw_output = self._run_model_forward(\n"}
+,{"stream_name":"stderr","time":79.200135443,"data":"                 ^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200139688,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/api.py\", line 384, in _run_model_forward\n"}
+,{"stream_name":"stderr","time":79.200144246,"data":"    output = self.forward(imgs, ex_t, in_t, feat_layers, infer_gs, use_ray_pose, ref_view_strategy)\n"}
+,{"stream_name":"stderr","time":79.200148631,"data":"             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200153065,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py\", line 124, in decorate_context\n"}
+,{"stream_name":"stderr","time":79.200157661,"data":"    return func(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.200161857,"data":"           ^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200166095,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/api.py\", line 129, in forward\n"}
+,{"stream_name":"stderr","time":79.200170561,"data":"    return self.model(\n"}
+,{"stream_name":"stderr","time":79.200174647,"data":"           ^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200178823,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1776, in _wrapped_call_impl\n"}
+,{"stream_name":"stderr","time":79.200183569,"data":"    return self._call_impl(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.200187783,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200192111,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1787, in _call_impl\n"}
+,{"stream_name":"stderr","time":79.200196672,"data":"    return forward_call(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.200200834,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200205042,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/da3.py\", line 132, in forward\n"}
+,{"stream_name":"stderr","time":79.200209549,"data":"    feats, aux_feats = self.backbone(\n"}
+,{"stream_name":"stderr","time":79.200245175,"data":"                       ^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200249687,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1776, in _wrapped_call_impl\n"}
+,{"stream_name":"stderr","time":79.200254201,"data":"    return self._call_impl(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.200258436,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200262641,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1787, in _call_impl\n"}
+,{"stream_name":"stderr","time":79.200267239,"data":"    return forward_call(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.200272361,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200276688,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/dinov2.py\", line 60, in forward\n"}
+,{"stream_name":"stderr","time":79.200281166,"data":"    return self.pretrained.get_intermediate_layers(\n"}
+,{"stream_name":"stderr","time":79.200285452,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200289696,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/vision_transformer.py\", line 379, in get_intermediate_layers\n"}
+,{"stream_name":"stderr","time":79.200294417,"data":"    outputs, aux_outputs = self._get_intermediate_layers_not_chunked(\n"}
+,{"stream_name":"stderr","time":79.200299103,"data":"                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200303703,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/vision_transformer.py\", line 334, in _get_intermediate_layers_not_chunked\n"}
+,{"stream_name":"stderr","time":79.200308377,"data":"    x = self.process_attention(\n"}
+,{"stream_name":"stderr","time":79.200312599,"data":"        ^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.20031681,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/vision_transformer.py\", line 364, in process_attention\n"}
+,{"stream_name":"stderr","time":79.200321405,"data":"    x = block(x, pos=pos, attn_mask=attn_mask)\n"}
+,{"stream_name":"stderr","time":79.200325689,"data":"        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200330057,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1776, in _wrapped_call_impl\n"}
+,{"stream_name":"stderr","time":79.200334574,"data":"    return self._call_impl(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.200338867,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200343065,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1787, in _call_impl\n"}
+,{"stream_name":"stderr","time":79.20034753,"data":"    return forward_call(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.200351718,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200355906,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/layers/block.py\", line 101, in forward\n"}
+,{"stream_name":"stderr","time":79.200360529,"data":"    x = x + attn_residual_func(x, pos=pos, attn_mask=attn_mask)\n"}
+,{"stream_name":"stderr","time":79.200364861,"data":"            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200369181,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/layers/block.py\", line 79, in attn_residual_func\n"}
+,{"stream_name":"stderr","time":79.200377111,"data":"    return self.ls1(self.attn(self.norm1(x), pos=pos, attn_mask=attn_mask))\n"}
+,{"stream_name":"stderr","time":79.200381545,"data":"                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200385906,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1776, in _wrapped_call_impl\n"}
+,{"stream_name":"stderr","time":79.200390539,"data":"    return self._call_impl(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.200395152,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200399386,"data":"  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1787, in _call_impl\n"}
+,{"stream_name":"stderr","time":79.20040393,"data":"    return forward_call(*args, **kwargs)\n"}
+,{"stream_name":"stderr","time":79.200408133,"data":"           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200412409,"data":"  File \"/usr/local/lib/python3.12/dist-packages/depth_anything_3/model/dinov2/layers/attention.py\", line 60, in forward\n"}
+,{"stream_name":"stderr","time":79.200416991,"data":"    x = F.scaled_dot_product_attention(\n"}
+,{"stream_name":"stderr","time":79.200421211,"data":"        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":79.200425575,"data":"torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 14.74 GiB. GPU 0 has a total capacity of 14.56 GiB of which 11.02 GiB is free. Including non-PyTorch memory, this process has 3.54 GiB memory in use. Of the allocated memory 3.19 GiB is allocated by PyTorch, and 230.39 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)\n"}
+,{"stream_name":"stdout","time":79.208883854,"data":"[11:09:07] done: [] | failed: ['da3']\n"}
+,{"stream_name":"stderr","time":84.365479935,"data":"/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":84.365535911,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":84.619970459,"data":"/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":84.620020133,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":85.287384103,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":86.109761541,"data":"[NbConvertApp] Writing 332914 bytes to __results__.html\n"}
+]

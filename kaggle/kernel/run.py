@@ -23,6 +23,11 @@ Outputs to /kaggle/working/est/<model>/<view>.npy plus manifest.json.
 # not declare addict among its dependencies.
 import os as _os
 
+# Set before torch is imported. DA3 across many views allocates in large
+# blocks, and the T4 fails a 4.7 GiB request with 11 GiB free purely from
+# fragmentation.
+_os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+
 _PKGS = {
     "moge2": "git+https://github.com/microsoft/MoGe.git",
     "vggt": "git+https://github.com/facebookresearch/vggt.git",
@@ -184,33 +189,45 @@ def run_vggt(paths, size, device):
 def run_da3(paths, size, device, repo="depth-anything/DA3-LARGE"):
     import torch
     import depth_anything_3 as da3
-    log(f"== {repo} (multi-view)  package exposes: "
-        f"{[a for a in dir(da3) if not a.startswith('_')][:15]}")
     from depth_anything_3.api import DepthAnything3
-    model = DepthAnything3.from_pretrained(repo).to(device).eval()
-    imgs = [np.asarray(Image.open(paths[v]).convert("RGB")) for v in VIEWS]
-    # Attention across views is quadratic in view count, so 14 views at full
-    # precision asks for ~20 GiB on a 14.5 GiB T4. Half precision fits; a
-    # smaller backbone is the fallback if it still does not.
-    try:
-        with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
-            pred = model.inference(imgs)
-    except torch.OutOfMemoryError:
-        log("   OOM at fp16; retrying on DA3-BASE")
-        del model
-        torch.cuda.empty_cache()
-        repo = "depth-anything/DA3-BASE"
-        model = DepthAnything3.from_pretrained(repo).to(device).eval()
-        with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
-            pred = model.inference(imgs)
+
+    # Attention across views is quadratic in view count, so the T4 cannot hold
+    # the large backbone over fourteen views. Step down along two axes --
+    # backbone first, then view count -- and record which rung produced the
+    # result, since a result from a reduced set is not the same measurement.
+    ladder = [(repo, list(VIEWS)),
+              ("depth-anything/DA3-BASE", list(VIEWS)),
+              ("depth-anything/DA3-BASE",
+               [v for v in VIEWS if not v.endswith("_dn")])]
+
+    last = None
+    for rung, (model_id, views) in enumerate(ladder):
+        try:
+            log(f"== {model_id}  {len(views)} views  (rung {rung})")
+            model = DepthAnything3.from_pretrained(model_id).to(device).eval()
+            imgs = [np.asarray(Image.open(paths[v]).convert("RGB"))
+                    for v in views]
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+                pred = model.inference(imgs)
+            break
+        except Exception as exc:
+            last = exc
+            if "out of memory" not in str(exc).lower():
+                raise
+            log(f"   OOM on rung {rung}: {str(exc)[:120]}")
+            for name in ("model", "imgs", "pred"):
+                if name in dir():
+                    del_target = locals().get(name)
+                    del del_target
+            torch.cuda.empty_cache()
+    else:
+        raise RuntimeError(f"every rung ran out of memory; last: {last}")
+
     log(f"   prediction fields: "
         f"{[a for a in dir(pred) if not a.startswith('_')][:20]}")
     depth = np.asarray(getattr(pred, "depth"))
-    for i, v in enumerate(VIEWS):
+    for i, v in enumerate(views):
         save("da3_large_depth", v, to_full(np.squeeze(depth[i]), size))
-    # The cameras it solved for are the real test of a multi-view model on this
-    # input: per-view depth can look fine while the views are stacked in one
-    # place, which is exactly how VGGT failed here.
     for field in ("extrinsics", "intrinsics", "conf", "scale_factor"):
         val = getattr(pred, field, None)
         if val is None:
@@ -218,11 +235,12 @@ def run_da3(paths, size, device, repo="depth-anything/DA3-LARGE"):
         arr = np.asarray(val.detach().cpu() if hasattr(val, "detach") else val)
         np.save(f"/kaggle/working/da3_{field}.npy", arr.astype(np.float32))
         log(f"   saved {field} {arr.shape}")
-        if field == "extrinsics":
-            manifest["notes"]["da3_extrinsics"] = arr.tolist()
     manifest["models"]["da3_large_depth"] = {
-        "kind": "depth", "hf": repo, "precision": "fp16 autocast", "conditioning": "multi-view (6 images)",
+        "kind": "depth", "hf": model_id, "precision": "fp16 autocast",
+        "conditioning": f"multi-view ({len(views)} images)",
+        "views_used": views, "rung": rung,
         "note": "larger == farther"}
+    manifest["notes"]["da3_views_used"] = views
     del model
 
 
