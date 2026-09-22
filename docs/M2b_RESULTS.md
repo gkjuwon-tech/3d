@@ -109,6 +109,9 @@ check that needs no ground truth.
 
 ## What to do next
 
+*Outcome recorded in [M1b](M1b_RESULTS.md): the silhouette half succeeded and
+the registration half did not.*
+
 Elevated three-quarter views now serve three separate purposes at once:
 
 1. **Silhouette constraints.** M1: the canonical six give three, and a diagonal

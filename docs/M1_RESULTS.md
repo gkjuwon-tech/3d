@@ -101,3 +101,21 @@ exist.
   with confidence rather than as a soft prior.
 - The refinement stages now have a number to beat: Chamfer 0.0198 and volume
   ratio 1.97×, from a reconstruction that never fails.
+
+---
+
+## Extended in M1b
+
+Eight three-quarter views were added later, and the floor moved with them.
+See [M1b](M1b_RESULTS.md).
+
+| | 6 views | 14 views |
+|---|---|---|
+| Chamfer | 0.019788 | **0.009948** |
+| volume ratio | 1.966× | **1.443×** |
+| containment | 100.0000% | 100.0000% |
+| triangles | 3,132,272 | 2,854,890 |
+
+The conclusion in finding 3 above — that the fat is the method's limit rather
+than a resolution artifact — held. Doubling the grid moved Chamfer by about
+0.001 at both view counts. What halved it was more viewing directions.

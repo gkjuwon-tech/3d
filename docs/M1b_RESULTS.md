@@ -1,4 +1,9 @@
-# M2c — Adding three-quarter views
+# M1b — Adding three-quarter views
+
+*Filed as an extension of M1, not M2. What these views bought is a better
+floor: more silhouette constraints, a tighter bound, the same guarantees. The
+learned-model question they were also meant to answer came back negative, and
+that belongs with M2's record rather than driving a milestone of its own.*
 
 M1 and M2b converged on one change from two directions. M1: the canonical six
 orthographic views supply three silhouette constraints, and a diagonal view is
