@@ -69,7 +69,10 @@ def load_view(views_dir, hull_dir, view, normals_dir, res):
         gt = np.where(hit_full, gt, np.nan)
         hull_full = hull < BG
         hull = np.where(hull_full, hull, np.nan)
-        with np.errstate(invalid="ignore"):
+        import warnings
+        with np.errstate(invalid="ignore"), warnings.catch_warnings():
+            # blocks lying entirely outside the mask average to nan by design
+            warnings.simplefilter("ignore", RuntimeWarning)
             gt = np.nanmean(gt.reshape(res, k, res, k), axis=(1, 3))
             hull = np.nanmean(hull.reshape(res, k, res, k), axis=(1, 3))
             n = blk(n)
@@ -82,18 +85,26 @@ def load_view(views_dir, hull_dir, view, normals_dir, res):
     return gt, hull, hit, n, meta
 
 
-def gradients_from_normals(n, sign, nz_floor=0.15):
-    """Depth gradient implied by the normals, and where it is trustworthy.
+def gradients_from_normals(n, sign, pixel_size, nz_floor=0.15):
+    """Depth gradient implied by the normals, in depth units *per pixel*.
 
-    Where the surface turns edge-on, n_z approaches zero and the gradient
+    n_x/n_z is a change in depth per unit of world distance, while the solve's
+    finite differences are per pixel, so the ratio is scaled by the pixel size.
+    Leaving that out inflates every gradient by the resolution -- 465x at
+    res 512 -- and the solve chases a surface hundreds of times too steep.
+
+    The row axis is negated because image rows increase downward while the
+    camera's up axis points the other way.
+
+    Where the surface turns edge-on, n_z approaches zero and the ratio
     diverges. Those pixels are dropped from the gradient term rather than
     clamped, and the solve interpolates across them.
     """
     nz = n[..., 2]
     ok = np.abs(nz) > nz_floor
     safe = np.where(ok, nz, 1.0)
-    gx = sign * n[..., 0] / safe
-    gy = sign * n[..., 1] / safe
+    gx = sign * (n[..., 0] / safe) * pixel_size
+    gy = -sign * (n[..., 1] / safe) * pixel_size
     return np.where(ok, gx, 0.0), np.where(ok, gy, 0.0), ok
 
 
@@ -104,25 +115,49 @@ def build_rim(hit, width=3):
 
 
 def solve_view(hull, hit, gx, gy, gok, *, w_rim, w_inner, w_grad, w_smooth,
-               anchor_blur, tol, maxiter, x0=None):
-    """Screened Poisson solve over the masked pixels."""
+               anchor_blur, tol, maxiter, pixel_size=1.0, x0=None,
+               pinned=None):
+    """Screened Poisson solve over the masked pixels.
+
+    Gradient equations are scaled by 1/pixel_size so their residuals are in
+    world units per world unit rather than per pixel. Without that the two
+    terms sit on different scales -- gradient residuals around 0.002 against
+    anchor residuals around 0.02 at res 512 -- and the anchor quietly wins a
+    contest the weights say it should lose, at a strength that also changes
+    with resolution.
+    """
+    w_grad = w_grad / max(pixel_size, 1e-12)
     H, W = hit.shape
     idx = -np.ones((H, W), dtype=np.int64)
     n_unk = int(hit.sum())
     idx[hit] = np.arange(n_unk)
 
-    # The hull's surface carries wide terraces from the voxel grid. The rim
-    # anchor is exact and stays sharp; the interior anchor is only a weak prior,
-    # so it is blurred and cannot stamp the grid's pattern into the answer.
+    # The hull is not an equality anchor anywhere, including the rim.
+    #
+    # The original design pinned depth to the hull along the silhouette
+    # boundary, on the theory that the hull touches the true surface there.
+    # Measured: the hull's depth error is 0.0231 on the rim against 0.0194
+    # inside -- the rim is the *worst* place, not the best, because near a
+    # silhouette the surface is nearly parallel to the view ray, so one voxel
+    # of 3D slack becomes a large depth error. Nailing the boundary to a value
+    # wrong by 0.023 caps the whole solve at 0.023, which is exactly what
+    # feeding it exact gradients produced.
+    #
+    # What the hull is, per-pixel and verified on every pixel of this view, is
+    # a *lower bound*: hull depth never exceeds true depth. So it enters as an
+    # inequality plus a weak pull, and the answer settles as close to the hull
+    # as the gradients allow -- touching it where it is tight, standing behind
+    # it where it is not.
     anchor = np.where(np.isfinite(hull), hull, np.nan)
     filled = np.where(np.isfinite(anchor), anchor, np.nanmean(anchor))
-    if anchor_blur > 0:
-        smooth_anchor = ndimage.gaussian_filter(filled, anchor_blur)
-    else:
-        smooth_anchor = filled
-    rim = build_rim(hit)
-    target = np.where(rim, filled, smooth_anchor)
-    w_a = np.where(rim, w_rim, w_inner)
+    target = ndimage.gaussian_filter(filled, anchor_blur) if anchor_blur > 0 \
+        else filled
+    w_a = np.full(hit.shape, w_inner, dtype=np.float64)
+    if pinned is not None:
+        # active-set pass: pixels the previous round pushed through the floor
+        # are held on it while the rest re-solve around them
+        w_a = np.where(pinned, w_rim, w_a)
+        target = np.where(pinned, filled, target)
     w_a = np.where(np.isfinite(anchor), w_a, w_inner * 0.05)
 
     rows, cols, vals, rhs = [], [], [], []
@@ -238,21 +273,21 @@ def score(z, gt, hull, hit):
 
 
 def calibrate_sign(views_dir, hull_dir, view, normals_dir, res):
-    """Estimators differ in axis convention; resolve it once against truth."""
-    gt, hull, hit, n, _ = load_view(views_dir, hull_dir, view, normals_dir, res)
-    gtn = np.load(os.path.join(views_dir, "normal_npy", f"{view}.npy"))
-    meta = json.load(open(os.path.join(views_dir, "cameras.json")))
-    R = np.array(meta["views"][view]["matrix_world"], dtype=np.float64)[:3, :3]
-    ref = (gtn.reshape(-1, 3) @ R).reshape(gtn.shape)
-    if res != gt.shape[0]:
-        pass
+    """Estimators differ in axis convention; resolve it once against truth.
+
+    Both sides go through load_view so they are downsampled identically --
+    comparing a full-resolution reference against a reduced mask is how this
+    went wrong the first time.
+    """
+    _, _, hit, n, _ = load_view(views_dir, hull_dir, view, normals_dir, res)
+    _, _, _, ref, _ = load_view(views_dir, hull_dir, view, "GT", res)
     best = None
     for sx in (1, -1):
         for sy in (1, -1):
             for sz in (1, -1):
                 cand = n * np.array([sx, sy, sz])
                 c = np.clip((cand[hit] * ref[hit]).sum(1), -1, 1)
-                err = np.degrees(np.arccos(c)).mean()
+                err = float(np.degrees(np.arccos(c)).mean())
                 if best is None or err < best[0]:
                     best = (err, (sx, sy, sz))
     return best
@@ -275,6 +310,8 @@ def main():
     ap.add_argument("--nz-floor", type=float, default=0.15)
     ap.add_argument("--tol", type=float, default=1e-7)
     ap.add_argument("--maxiter", type=int, default=3000)
+    ap.add_argument("--active-set", type=int, default=6,
+                   help="rounds of solve-and-pin against the hull floor")
     ap.add_argument("--clamp", action="store_true",
                     help="clamp the result to lie behind the hull")
     ap.add_argument("--budget", type=float, default=None,
@@ -290,20 +327,38 @@ def main():
         return
 
     t0 = time.time()
-    gt, hull, hit, n, _ = load_view(args.views, args.hull_views, args.view,
+    gt, hull, hit, n, meta = load_view(args.views, args.hull_views, args.view,
                                     args.normals, args.res)
-    gx, gy, gok = gradients_from_normals(n, args.sign, args.nz_floor)
+    px = meta["ortho_scale"] / args.res
+    gx, gy, gok = gradients_from_normals(n, args.sign, px, args.nz_floor)
     print(f"view {args.view}  res {args.res}  masked {hit.sum():,} px  "
-          f"usable gradient {100*gok[hit].mean():.1f}%")
+          f"pixel {px:.6f}  usable gradient {100*gok[hit].mean():.1f}%")
 
-    z, info, stats = solve_view(
-        hull, hit, gx, gy, gok,
-        w_rim=args.w_rim, w_inner=args.w_inner, w_grad=args.w_grad,
-        w_smooth=args.w_smooth, anchor_blur=args.anchor_blur,
-        tol=args.tol, maxiter=args.maxiter)
+    # Active set on the floor d >= hull: solve, see who fell through, hold
+    # those on the floor, solve again. The set is monotone in practice and
+    # settles in a handful of rounds.
+    pinned = None
+    z = None
+    floor = np.where(np.isfinite(hull), hull, -np.inf)
+    for it in range(args.active_set):
+        z, info, stats = solve_view(
+            hull, hit, gx, gy, gok,
+            w_rim=args.w_rim, w_inner=args.w_inner, w_grad=args.w_grad,
+            w_smooth=args.w_smooth, anchor_blur=args.anchor_blur,
+            tol=args.tol, maxiter=args.maxiter, pixel_size=px,
+            x0=(z[hit] if z is not None else None), pinned=pinned)
+        below = hit & np.isfinite(z) & (z < floor - 1e-7)
+        new_pinned = below if pinned is None else (pinned | below)
+        n_new = int(below.sum() if pinned is None
+                    else (below & ~pinned).sum())
+        print(f"  pass {it}: cg {info}  below floor {100*below[hit].mean():5.2f}%"
+              f"  newly pinned {n_new:,}")
+        pinned = new_pinned
+        if n_new == 0:
+            break
+    z = np.maximum(z, floor)
     print(f"solved {stats['unknowns']:,} unknowns from "
-          f"{stats['grad_eqs']:,} gradient equations  "
-          f"cg info {info}  {time.time()-t0:.1f}s")
+          f"{stats['grad_eqs']:,} gradient equations  {time.time()-t0:.1f}s")
 
     if args.clamp or args.budget is not None:
         lo = hull
