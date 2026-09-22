@@ -28,7 +28,7 @@ _PKGS = {
     "vggt": "git+https://github.com/facebookresearch/vggt.git",
     "da3": "depth-anything-3 addict",
 }
-_ONLY = _os.environ.get("ONLY", "da3,vggt").split(",")
+_ONLY = _os.environ.get("ONLY", "da3").split(",")
 for _job in _ONLY:
     if _job in _PKGS:
         print(f"[install] {_job}: {_PKGS[_job]}", flush=True)
@@ -189,8 +189,20 @@ def run_da3(paths, size, device, repo="depth-anything/DA3-LARGE"):
     from depth_anything_3.api import DepthAnything3
     model = DepthAnything3.from_pretrained(repo).to(device).eval()
     imgs = [np.asarray(Image.open(paths[v]).convert("RGB")) for v in VIEWS]
-    with torch.no_grad():
-        pred = model.inference(imgs)
+    # Attention across views is quadratic in view count, so 14 views at full
+    # precision asks for ~20 GiB on a 14.5 GiB T4. Half precision fits; a
+    # smaller backbone is the fallback if it still does not.
+    try:
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+            pred = model.inference(imgs)
+    except torch.OutOfMemoryError:
+        log("   OOM at fp16; retrying on DA3-BASE")
+        del model
+        torch.cuda.empty_cache()
+        repo = "depth-anything/DA3-BASE"
+        model = DepthAnything3.from_pretrained(repo).to(device).eval()
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+            pred = model.inference(imgs)
     log(f"   prediction fields: "
         f"{[a for a in dir(pred) if not a.startswith('_')][:20]}")
     depth = np.asarray(getattr(pred, "depth"))
@@ -209,7 +221,7 @@ def run_da3(paths, size, device, repo="depth-anything/DA3-LARGE"):
         if field == "extrinsics":
             manifest["notes"]["da3_extrinsics"] = arr.tolist()
     manifest["models"]["da3_large_depth"] = {
-        "kind": "depth", "hf": repo, "conditioning": "multi-view (6 images)",
+        "kind": "depth", "hf": repo, "precision": "fp16 autocast", "conditioning": "multi-view (6 images)",
         "note": "larger == farther"}
     del model
 
@@ -254,5 +266,5 @@ def main():
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("ONLY", "da3,vggt")
+    os.environ.setdefault("ONLY", "da3")
     main()
