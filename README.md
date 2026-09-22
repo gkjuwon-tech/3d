@@ -12,6 +12,17 @@ molten seams, seven-spine crown fan, four eyes per side, six legs, twelve-ring
 counterweight tail ending in a basalt crystal cluster. Perfectly bilaterally
 symmetric, held in a rigid neutral A-pose so the views stay modelable.
 
+## Stage 2 — 6 views to one mesh
+
+`docs/PLAN.md` is the design for the hard part: fusing the six views into a
+single mesh without it exploding. Short version of the diagnosis — TSDF-style
+depth fusion assumes many observations per surface point, and six orthographic
+views give you one. The plan replaces statistical redundancy with constraints
+(visual hull envelope, watertight implicit surface, bilateral symmetry),
+treats per-view drift and per-view depth scale/shift as free parameters solved
+jointly with the shape instead of as errors to eliminate, and splits the
+frequency bands so surface detail never has to come out of a depth map.
+
 ## Two ways to run stage 1
 
 - **Manual (Gemini app / subscription)** — `docs/PROMPT_PACK.md` has the
