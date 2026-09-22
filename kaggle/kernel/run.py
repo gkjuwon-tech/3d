@@ -32,8 +32,9 @@ _PKGS = {
     "moge2": "git+https://github.com/microsoft/MoGe.git",
     "vggt": "git+https://github.com/facebookresearch/vggt.git",
     "da3": "depth-anything-3 addict",
+    "normals": "--upgrade diffusers transformers accelerate",
 }
-_ONLY = _os.environ.get("ONLY", "da3").split(",")
+_ONLY = _os.environ.get("ONLY", "normals,moge2").split(",")
 for _job in _ONLY:
     if _job in _PKGS:
         print(f"[install] {_job}: {_PKGS[_job]}", flush=True)
@@ -259,6 +260,31 @@ def run_da3(paths, size, device, repo="depth-anything/DA3-BASE"):
         raise RuntimeError("no subset fitted in memory")
 
 
+def run_normals(paths, size, device):
+    """Surface normals for every view. S2 integrates these, so they are now the
+    primary signal rather than a comparison point."""
+    import torch
+    from diffusers import MarigoldNormalsPipeline
+    repo = "prs-eth/marigold-normals-v1-1"
+    log(f"== {repo}  ensemble=10 steps=4 res=1024")
+    pipe = MarigoldNormalsPipeline.from_pretrained(
+        repo, variant="fp16", torch_dtype=torch.float16).to(device)
+    pipe.set_progress_bar_config(disable=True)
+    for v in VIEWS:
+        t = time.time()
+        im = Image.open(paths[v]).convert("RGB")
+        out = pipe(im, ensemble_size=10, num_inference_steps=4,
+                   processing_resolution=1024, match_input_resolution=True,
+                   output_type="np")
+        a = np.asarray(out.prediction[0], dtype=np.float32)
+        save("marigold_normals_v1_1", v, a)
+        log(f"   {v} {a.shape} {time.time()-t:.1f}s")
+    manifest["models"]["marigold_normals_v1_1"] = {
+        "kind": "normals", "hf": repo, "ensemble": 10,
+        "note": "unit normals in camera space"}
+    del pipe
+
+
 def main():
     import torch
     log("torch", torch.__version__, "cuda", torch.cuda.is_available())
@@ -278,7 +304,8 @@ def main():
     log(f"reference resolution {size}")
 
     only = os.environ.get("ONLY", "").split(",") if os.environ.get("ONLY") else None
-    jobs = (("moge2", lambda: run_moge2(paths, size, device)),
+    jobs = (("normals", lambda: run_normals(paths, size, device)),
+            ("moge2", lambda: run_moge2(paths, size, device)),
             ("vggt", lambda: run_vggt(paths, size, device)),
             ("da3", lambda: run_da3(paths, size, device)))
     for name, fn in jobs:
@@ -299,5 +326,5 @@ def main():
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("ONLY", "da3")
+    os.environ.setdefault("ONLY", "normals,moge2")
     main()
