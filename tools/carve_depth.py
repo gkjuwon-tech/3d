@@ -145,6 +145,14 @@ def main():
     ap.add_argument("--anchor-blur", type=float, default=8.0)
     ap.add_argument("--nz-floor", type=float, default=0.15)
     ap.add_argument("--maxiter", type=int, default=4000)
+    ap.add_argument("--save-votes", default=None,
+                   help="write the per-voxel vote count and stop. The votes do "
+                        "not depend on the quorum, and the integration that "
+                        "produces them is the expensive part, so sweeping k by "
+                        "re-integrating fourteen views each time is wasted "
+                        "work -- solve once, threshold afterwards.")
+    ap.add_argument("--from-votes", default=None,
+                   help="apply a quorum to a saved vote count")
     ap.add_argument("--normals-dir", default=None,
                    help="camera-space normals per view; default is the view "
                         "set's own ground-truth normal pass")
@@ -173,7 +181,8 @@ def main():
     views = list(meta["views"])
     if args.only_views:
         views = args.only_views.split(",")
-    votes = np.zeros(occ.shape, dtype=np.uint8) if args.quorum > 0 else None
+    votes = (np.zeros(occ.shape, dtype=np.uint8)
+             if (args.quorum > 0 or args.save_votes) else None)
     start = int(occ.sum())
     print(f"grid {tuple(dims)}  {start:,} voxels  margin {margin:.5f} "
           f"({args.margin_voxels} voxels)")
@@ -203,14 +212,23 @@ def main():
         print(f"  {v:<13} {verb} {marked:>9,}  contact {touch:.1f}%{note}"
               f"  {time.time()-t0:.0f}s")
 
-    if votes is not None:
-        hist = np.bincount(votes[occ].ravel(), minlength=16)[:8]
+    if votes is not None and not args.save_votes:
+        hist = np.bincount(votes[occ].ravel(), minlength=16)[:16]
         print("  votes per occupied voxel: "
               + "  ".join(f"{i}:{c:,}" for i, c in enumerate(hist) if c))
         occ &= votes < args.quorum
+    if args.save_votes:
+        np.savez_compressed(args.save_votes, votes=votes, dims=dims, lo=lo,
+                            h=h)
+        print(f"\nwrote {args.save_votes}  (quorum applied later)")
+        return
+    finish(occ, dims, lo, h, start, args.out)
+
+
+def finish(occ, dims, lo, h, start, out):
     print(f"\nremoved {start - occ.sum():,} of {start:,} "
           f"({100*(start-occ.sum())/start:.2f}%)  remaining {occ.sum():,}")
-    np.savez_compressed(args.out + "_occ.npz", occ=np.packbits(occ),
+    np.savez_compressed(out + "_occ.npz", occ=np.packbits(occ),
                         dims=dims, lo=lo, h=h)
     from scipy import ndimage
     from skimage import measure
@@ -219,9 +237,9 @@ def main():
     verts, faces, _, _ = measure.marching_cubes(padded, level=0.5,
                                                 spacing=(h, h, h))
     verts += lo - h
-    vh.write_ply(args.out + ".ply", verts.astype(np.float32),
+    vh.write_ply(out + ".ply", verts.astype(np.float32),
                  faces.astype(np.int32))
-    print(f"wrote {args.out}.ply  {len(faces):,} faces")
+    print(f"wrote {out}.ply  {len(faces):,} faces")
 
 
 if __name__ == "__main__":
