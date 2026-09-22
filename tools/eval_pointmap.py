@@ -22,8 +22,13 @@ from PIL import Image
 from scipy.spatial import cKDTree
 
 
-def umeyama(src, dst, with_scale=True):
-    """Least-squares similarity transform mapping src onto dst."""
+def umeyama(src, dst, scale=None):
+    """Least-squares similarity transform mapping src onto dst.
+
+    Passing `scale` holds it fixed and solves rotation and translation for
+    that scale. Translation depends on the scale, so it has to be computed
+    with the value actually being applied.
+    """
     mu_s, mu_d = src.mean(0), dst.mean(0)
     s, d = src - mu_s, dst - mu_d
     C = d.T @ s / len(src)
@@ -33,7 +38,7 @@ def umeyama(src, dst, with_scale=True):
         S[2, 2] = -1
     R = U @ S @ Vt
     var = (s ** 2).sum() / len(src)
-    c = (D * np.diag(S)).sum() / var if with_scale else 1.0
+    c = (D * np.diag(S)).sum() / var if scale is None else scale
     t = mu_d - c * R @ mu_s
     return c, R, t
 
@@ -84,6 +89,9 @@ def main():
     ap.add_argument("--views", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--samples", type=int, default=300_000)
+    ap.add_argument("--coverage-radius", type=float, default=0.01,
+                    help="a true-surface point counts as covered if a predicted "
+                         "point lies within this distance")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -124,21 +132,35 @@ def main():
     sub = pts[rng.choice(len(pts), size=min(args.samples, len(pts)),
                          replace=False)]
 
-    # Align by nearest-neighbour correspondence, refined a few times. The
-    # first fit only has to be close enough for the correspondences to improve.
+    # Trimmed ICP with the scale frozen after the first estimate.
+    #
+    # Re-solving for scale against one-sided nearest neighbours every iteration
+    # degenerates: a partial cloud can always lower its own residual by
+    # shrinking onto a dense part of the target, so the scale walks downward
+    # and the reported error stops being about the prediction. The scale is
+    # fitted once, from correspondences that have not yet been biased by it,
+    # and then held.
     tree_gt = cKDTree(gp)
     cur = sub.copy()
-    for it in range(6):
-        _, j = tree_gt.query(cur, workers=-1)
-        c, Rm, t = umeyama(sub, gp[j])
+    c = None
+    for it in range(10):
+        d0, j = tree_gt.query(cur, workers=-1)
+        # trim the worst 20%: those are points with no true correspondence,
+        # and they drag the fit rather than inform it
+        keep_i = d0 <= np.quantile(d0, 0.8)
+        c, Rm, t = umeyama(sub[keep_i], gp[j][keep_i], scale=c)
         cur = (c * (Rm @ sub.T).T + t)
-        d = np.linalg.norm(cur - gp[j], axis=1)
-        print(f"  align {it}: scale {c:.4f}  mean residual {d.mean():.5f}")
+        d = np.linalg.norm(cur - gp[tree_gt.query(cur, workers=-1)[1]], axis=1)
+        print(f"  align {it}: scale {c:.4f} (fixed after first)  "
+              f"trimmed mean {d[keep_i].mean():.5f}  all {d.mean():.5f}")
 
     d_pg, _ = tree_gt.query(cur, workers=-1)
     d_gp, _ = cKDTree(cur).query(gp, workers=-1)
+    covered = float((d_gp < args.coverage_radius).mean())
     res = {
         "points_used": int(len(pts)),
+        "gt_surface_covered": covered,
+        "coverage_radius": args.coverage_radius,
         "similarity_scale": float(c),
         "chamfer_mean": float((d_pg.mean() + d_gp.mean()) / 2),
         "pred_to_gt_mean": float(d_pg.mean()),
@@ -148,6 +170,8 @@ def main():
     }
     print("\n" + "=" * 56)
     print(f"points used      {res['points_used']:,}")
+    print(f"gt surface covered within {args.coverage_radius}: "
+          f"{100*covered:.2f}%")
     print(f"Chamfer (sym)    {res['chamfer_mean']:.6f}   "
           f"object height == 1.0")
     print(f"  pred -> gt     mean {res['pred_to_gt_mean']:.6f}  "

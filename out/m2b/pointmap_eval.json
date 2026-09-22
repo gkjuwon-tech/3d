@@ -1,0 +1,11 @@
+{
+  "points_used": 148413,
+  "gt_surface_covered": 0.042793333333333336,
+  "coverage_radius": 0.01,
+  "similarity_scale": 0.7250960467713413,
+  "chamfer_mean": 0.17375691391082781,
+  "pred_to_gt_mean": 0.03275407209228439,
+  "pred_to_gt_p95": 0.07336690181950838,
+  "gt_to_pred_mean": 0.31475975572937126,
+  "gt_to_pred_p95": 0.6967476467868918
+}

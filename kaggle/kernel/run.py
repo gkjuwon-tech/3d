@@ -14,6 +14,26 @@ done by the network -- which is saved for direct scoring against the truth.
 
 Outputs to /kaggle/working/est/<model>/<view>.npy plus manifest.json.
 """
+# Installs run before numpy is imported, and only for the jobs selected.
+#
+# Installing a package that pulls a different numpy after numpy is already
+# loaded leaves the interpreter holding the old module against new headers,
+# and the next compiled extension to import -- scipy here -- dies on an ABI
+# mismatch that has nothing to do with the model. depth-anything-3 also does
+# not declare addict among its dependencies.
+import os as _os
+
+_PKGS = {
+    "moge2": "git+https://github.com/microsoft/MoGe.git",
+    "vggt": "git+https://github.com/facebookresearch/vggt.git",
+    "da3": "depth-anything-3 addict",
+}
+_ONLY = _os.environ.get("ONLY", "da3").split(",")
+for _job in _ONLY:
+    if _job in _PKGS:
+        print(f"[install] {_job}: {_PKGS[_job]}", flush=True)
+        _os.system(f"pip install -q {_PKGS[_job]} 2>&1 | tail -2")
+
 import json
 import os
 import time
@@ -93,7 +113,6 @@ def to_full(a, size):
 # --------------------------------------------------------------- monocular
 def run_moge2(paths, size, device):
     import torch
-    os.system("pip install -q git+https://github.com/microsoft/MoGe.git 2>&1 | tail -1")
     from moge.model.v2 import MoGeModel
     repo = "Ruicheng/moge-2-vitl-normal"
     log(f"== {repo} (monocular control)")
@@ -127,7 +146,6 @@ def run_moge2(paths, size, device):
 # -------------------------------------------------------------- multi-view
 def run_vggt(paths, size, device):
     import torch
-    os.system("pip install -q git+https://github.com/facebookresearch/vggt.git 2>&1 | tail -1")
     from vggt.models.vggt import VGGT
     from vggt.utils.load_fn import load_and_preprocess_images
     repo = "facebook/VGGT-1B"
@@ -163,7 +181,6 @@ def run_vggt(paths, size, device):
 
 def run_da3(paths, size, device, repo="depth-anything/DA3-LARGE"):
     import torch
-    os.system("pip install -q depth-anything-3 2>&1 | tail -1")
     import depth_anything_3 as da3
     log(f"== {repo} (multi-view)  package exposes: "
         f"{[a for a in dir(da3) if not a.startswith('_')][:15]}")
@@ -196,9 +213,14 @@ def main():
     size = Image.open(paths[VIEWS[0]]).size[0]
     log(f"reference resolution {size}")
 
-    for name, fn in (("moge2", lambda: run_moge2(paths, size, device)),
-                     ("vggt", lambda: run_vggt(paths, size, device)),
-                     ("da3", lambda: run_da3(paths, size, device))):
+    only = os.environ.get("ONLY", "").split(",") if os.environ.get("ONLY") else None
+    jobs = (("moge2", lambda: run_moge2(paths, size, device)),
+            ("vggt", lambda: run_vggt(paths, size, device)),
+            ("da3", lambda: run_da3(paths, size, device)))
+    for name, fn in jobs:
+        if only and name not in only:
+            log(f"-- skipping {name}")
+            continue
         try:
             fn()
             torch.cuda.empty_cache()
@@ -213,4 +235,5 @@ def main():
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("ONLY", "da3")
     main()

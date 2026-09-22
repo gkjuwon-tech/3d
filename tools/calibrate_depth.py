@@ -105,7 +105,12 @@ def main():
             est = np.load(os.path.join(args.est, model, f"{view}.npy")
                           ).astype(np.float64)
 
-            hit = gt < BG
+            # Some estimators mark regions they decline to predict (MoGe uses
+            # NaN); those pixels are excluded everywhere rather than poisoning
+            # the mean.
+            valid = np.isfinite(est) if est.ndim == 2 else \
+                np.isfinite(est).all(-1)
+            hit = (gt < BG) & valid
             fit_mask = ndimage.binary_erosion(hit, iterations=args.erode) \
                 & (hull < BG)
 
@@ -123,6 +128,7 @@ def main():
             z_hull = to_depth(a_h, b_h)
             # raw: per-view min/max normalization onto the hull's depth range,
             # which is the best a naive pipeline does without solving anything
+            est = np.where(valid, est, np.nan)
             lo, hi = est[hit].min(), est[hit].max()
             span = hull[fit_mask]
             z_raw = (est - lo) / max(hi - lo, 1e-9)
@@ -143,10 +149,14 @@ def main():
                         "p95": float(np.percentile(d, 95))}
 
             hull_err = float(np.abs(hull[both] - gt[both]).mean())
+            if hit.sum() == 0:
+                raise RuntimeError(f"{model}/{view}: estimator produced no "
+                                   f"finite values inside the mask")
             rows[view] = {"gt_fit": err(z_gt), "hull_fit": err(z_hull),
                           "raw": err(z_raw),
                           "hull_baseline_mae": hull_err,
                           "coverage": float(hit.mean()),
+                          "declined_frac": float(1.0 - valid[gt < BG].mean()),
                           "affine_gt": [a_g, b_g], "affine_hull": [a_h, b_h]}
 
             origin, fwd = view_rays(info, ortho, res)
