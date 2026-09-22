@@ -1,5 +1,12 @@
 # M2 — Per-view estimation, measured
 
+> **Superseded in part by [M2b](M2b_RESULTS.md).** Two conclusions below do not
+> survive testing other estimators. "Depth loses to the hull" held for Marigold
+> and not for MoGe-2, DA3 or VGGT, which all beat it. "Top and bottom are
+> anti-informative" is a property of monocular estimation of those views rather
+> than of the views. The measurements here are unchanged and correct for the
+> models they cover.
+
 Depth and normal estimators run on a Kaggle T4 over the six orthographic views,
 scored against the exact ground truth the views were rendered from.
 
