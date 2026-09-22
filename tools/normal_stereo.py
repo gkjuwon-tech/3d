@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Find where each piece of integrated relief actually sits, by matching normals
+across views.
+
+Integration gets local shape right and absolute depth wrong: every piece
+between two discontinuities floats by an unknown constant, and a single missed
+jump drags whole regions off. Resting pieces against the hull fixes the
+constant only where a piece happens to touch it.
+
+Other views fix it everywhere they overlap. A surface point has one normal in
+world space, whichever camera sees it. Slide view A's relief along A's rays by
+an offset c; at the right c every point lands where the other views observe
+the same normal, and at a wrong c it lands on some other part of their
+images. That is a plane sweep (Collins 1996) with the normal field standing in
+for colour -- and a better one than colour for this job, because normals do
+not depend on where the lights were.
+
+Occlusion is handled the way multi-view stereo usually handles it: per pixel,
+only the best two source views count. A source that cannot see the point just
+does not make the cut. Costs are aggregated over a window in A assuming the
+offset, not the depth, is locally constant -- the relief carries the shape.
+
+Run (one target view):
+  python3 tools/normal_stereo.py --views refs/lucy_gt --relief R.npy --view 01_front
+"""
+import argparse
+import json
+import os
+
+import numpy as np
+from scipy import ndimage
+
+BG = 1e9
+
+
+def cam(meta, view):
+    m = np.array(meta["views"][view]["matrix_world"], dtype=np.float64)
+    return m[:3, 0], m[:3, 1], m[:3, 2], m[:3, 3], m[:3, :3]
+
+
+def world_normals(views_dir, normals_dir, view, meta):
+    if normals_dir:
+        n = np.load(os.path.join(normals_dir, f"{view}.npy")).astype(np.float32)
+        R = cam(meta, view)[4].astype(np.float32)
+        n = n @ R.T                                  # camera -> world
+    else:
+        n = np.load(os.path.join(views_dir, "normal_npy", f"{view}.npy")
+                    ).astype(np.float32)
+    n /= np.linalg.norm(n, axis=2, keepdims=True).clip(1e-9)
+    return n
+
+
+def pixel_rays(meta, view, res):
+    right, up, back, loc, _ = cam(meta, view)
+    o = meta["ortho_scale"]
+    c = ((np.arange(res) + 0.5) / res - 0.5) * o
+    u = c[None, :]
+    v = -c[:, None]
+    P0 = (loc[None, None, :] + u[..., None] * right + v[..., None] * up)
+    return P0.astype(np.float32), (-back).astype(np.float32)
+
+
+def sweep(meta, target, sources, nA, nB, hitB, relief, hull, hit, offsets,
+          win, facing_min=0.15, top=2):
+    """Aggregated cost per (offset, pixel) of target, as float32 [K, H, W]."""
+    res = hit.shape[0]
+    o = meta["ortho_scale"]
+    P0, dA = pixel_rays(meta, target, res)
+    K = len(offsets)
+    cost = np.full((K,) + hit.shape, np.inf, dtype=np.float32)
+    rows, cols = np.nonzero(hit)
+    P = P0[rows, cols]
+    nAp = nA[rows, cols]
+    base = relief[rows, cols].astype(np.float32)
+    floor = hull[rows, cols].astype(np.float32)
+    srcs = []
+    for s in sources:
+        right, up, back, loc, _ = cam(meta, s)
+        facing = nAp @ back.astype(np.float32)       # >0: surface faces s
+        srcs.append((s, right.astype(np.float32), up.astype(np.float32),
+                     loc.astype(np.float32), facing))
+    for k, c in enumerate(offsets):
+        d = base + c
+        X = P + d[:, None] * dA[None, :]
+        best = np.full((top, len(rows)), 2.0, dtype=np.float32)
+        wsum = np.zeros((top, len(rows)), dtype=np.float32)
+        for s, right, up, loc, facing in srcs:
+            rel = X - loc
+            col = (rel @ right / o + 0.5) * res - 0.5
+            row = (0.5 - rel @ up / o) * res - 0.5
+            ci = np.clip(np.rint(col).astype(np.int32), 0, res - 1)
+            ri = np.clip(np.rint(row).astype(np.int32), 0, res - 1)
+            ok = hitB[s][ri, ci] & (facing > facing_min)
+            dot = np.einsum("ij,ij->i", nAp, nB[s][ri, ci])
+            c_s = np.where(ok, 1.0 - dot, 2.0).astype(np.float32)
+            # aggregate over the window before choosing the best sources, so
+            # the choice is made per neighbourhood, not per noisy pixel
+            img = np.full(hit.shape, 2.0, dtype=np.float32)
+            img[rows, cols] = c_s
+            img = ndimage.uniform_filter(img, win, mode="nearest")[rows, cols]
+            # insert into the running top-k (k=2 here)
+            b0, b1 = best[0], best[1]
+            new0 = np.minimum(b0, img)
+            new1 = np.minimum(b1, np.maximum(b0, img))
+            best[0], best[1] = new0, new1
+        agg = best[:top].mean(axis=0)
+        agg = np.where(d >= floor - 1e-6, agg, np.inf)   # never in front of hull
+        cost[k][rows, cols] = agg
+    return cost
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--views", required=True)
+    ap.add_argument("--normals-dir", default=None)
+    ap.add_argument("--relief", required=True, help="npy depth up to offsets")
+    ap.add_argument("--hull-views", default="out/final_views")
+    ap.add_argument("--view", required=True)
+    ap.add_argument("--range", type=float, default=40.0, help="+- voxels")
+    ap.add_argument("--step", type=float, default=0.5, help="voxels")
+    ap.add_argument("--win", type=int, default=11)
+    ap.add_argument("--out", required=True)
+    args = ap.parse_args()
+
+    meta = json.load(open(os.path.join(args.views, "cameras.json")))
+    VOX = 1.0 / 1024
+    views = list(meta["views"])
+    hull = np.load(os.path.join(args.hull_views, "depth_npy", f"{args.view}.npy"))
+    hull = np.where(hull < BG, hull, np.nan)
+    hit = np.isfinite(hull)
+    relief = np.load(args.relief)
+    # centre the sweep on a contact-ish placement: median gap to the hull
+    gap = np.nanmedian((hull - relief)[hit])
+    relief = relief + gap
+    nA = world_normals(args.views, args.normals_dir, args.view, meta)
+    nB, hitB = {}, {}
+    for s in views:
+        if s == args.view:
+            continue
+        nB[s] = world_normals(args.views, args.normals_dir, s, meta)
+        hb = np.load(os.path.join(args.hull_views, "depth_npy", f"{s}.npy"))
+        hitB[s] = hb < BG
+    offsets = np.arange(-args.range, args.range + 1e-9, args.step) * VOX
+    cost = sweep(meta, args.view, list(nB), nA, nB, hitB, relief, hull, hit,
+                 offsets.astype(np.float32), args.win)
+    k = np.argmin(cost, axis=0)
+    best = np.take_along_axis(cost, k[None], 0)[0]
+    z = relief + offsets[k]
+    z = np.where(hit & np.isfinite(best), z, np.nan)
+    np.savez(args.out, z=z.astype(np.float32), cost=best.astype(np.float32),
+             k=k.astype(np.int16))
+    gt_path = os.path.join(args.views, "depth_npy", f"{args.view}.npy")
+    if os.path.exists(gt_path):
+        gt = np.load(gt_path)
+        m = hit & (gt < BG) & np.isfinite(z)
+        e = (z - gt)[m] / VOX
+        e0 = (relief - gt)[m] / VOX
+        print(f"relief(median-placed): MAE {np.abs(e0).mean():.2f}  "
+              f"stereo: MAE {np.abs(e).mean():.2f} vox  median |e| "
+              f"{np.median(np.abs(e)):.2f}  within1 {100*(np.abs(e)<1).mean():.1f}%"
+              f"  within3 {100*(np.abs(e)<3).mean():.1f}%  "
+              f"behind>3 {100*(e>3).mean():.1f}%")
+
+
+if __name__ == "__main__":
+    main()

@@ -236,7 +236,7 @@ def finish(occ, dims, lo, h, start, out):
                                      truncate=3.0)
     verts, faces, _, _ = measure.marching_cubes(padded, level=0.5,
                                                 spacing=(h, h, h))
-    verts += lo - h
+    verts += lo - 0.5 * h   # padded index i is voxel i-1, centred at lo+(i-0.5)h
     vh.write_ply(out + ".ply", verts.astype(np.float32),
                  faces.astype(np.int32))
     print(f"wrote {out}.ply  {len(faces):,} faces")

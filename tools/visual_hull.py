@@ -194,7 +194,10 @@ def main():
         print(f"re-occupied : {n_occ:,} voxels  volume {vol:.6f}")
     verts, faces, normals, _ = measure.marching_cubes(
         padded, level=args.level, spacing=(h, h, h))
-    verts += lo - h  # undo the pad, move to object space
+    # grid index i (after the one-voxel pad) is voxel i-1, centred at
+    # lo + (i - 0.5) h; subtracting a full h here put every mesh half a voxel
+    # off along all three axes
+    verts += lo - 0.5 * h
 
     print(f"mesh        : {len(verts):,} verts / {len(faces):,} faces")
 

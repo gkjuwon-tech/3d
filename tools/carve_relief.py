@@ -265,7 +265,7 @@ def main():
     padded = ndimage.gaussian_filter(padded, 1.0, truncate=3.0)
     verts, faces, _, _ = measure.marching_cubes(padded, level=0.5,
                                                 spacing=(h, h, h))
-    verts += lo - h
+    verts += lo - 0.5 * h   # padded index i is voxel i-1, centred at lo+(i-0.5)h
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from visual_hull import write_ply

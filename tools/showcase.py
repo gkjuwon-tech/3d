@@ -37,6 +37,18 @@ def parse_args():
     p.add_argument("--res", type=int, default=1400)
     p.add_argument("--samples", type=int, default=160)
     p.add_argument("--albedo", type=float, default=0.55)
+    p.add_argument("--focus", default=None,
+                   help="x,y,z to aim at, in the mesh's own coordinates. "
+                        "Implies --keep-coords so that two meshes framed on "
+                        "the same point are framed identically")
+    p.add_argument("--radius", type=float, default=None,
+                   help="radius of the sphere to frame around --focus")
+    p.add_argument("--keep-coords", action="store_true",
+                   help="do not re-normalise the mesh to its own bounding box; "
+                        "a reconstruction's box differs slightly from the "
+                        "ground truth's, which would shift every close-up")
+    p.add_argument("--shots", default=None,
+                   help="name:az:el:lens,... replacing the default four")
     return p.parse_args(argv)
 
 
@@ -98,7 +110,19 @@ def main():
     obj = import_mesh(os.path.abspath(args.mesh))
     print(f"[mesh] {len(obj.data.vertices):,} verts / "
           f"{len(obj.data.polygons):,} faces", flush=True)
-    radius = normalize(obj)
+    if args.focus:
+        args.keep_coords = True
+    if args.keep_coords:
+        bpy.context.view_layer.update()
+        c = [obj.matrix_world @ Vector(v) for v in obj.bound_box]
+        radius = (Vector((max(p[i] for p in c) for i in range(3)))
+                  - Vector((min(p[i] for p in c) for i in range(3)))).length / 2
+    else:
+        radius = normalize(obj)
+    target = Vector((0.0, 0.0, 0.0))
+    if args.focus:
+        target = Vector(tuple(float(t) for t in args.focus.split(",")))
+        radius = args.radius or 0.08
     bpy.context.view_layer.objects.active = obj
     bpy.ops.object.shade_smooth()
 
@@ -145,7 +169,18 @@ def main():
     sc.collection.objects.link(cam)
     sc.camera = cam
 
-    for name, (az, el, lens) in SHOTS.items():
+    shots = SHOTS
+    if args.shots:
+        shots = {}
+        for spec in args.shots.split(","):
+            name, az, el, lens = spec.split(":")
+            shots[name] = (float(az), float(el), float(lens))
+    # the lights were placed for a subject at the origin; carry them along
+    for o in sc.objects:
+        if o.type == "LIGHT":
+            o.matrix_world.translation += target
+
+    for name, (az, el, lens) in shots.items():
         cam_data.lens = lens
         # Frame the bounding sphere rather than guessing a distance: back off
         # exactly far enough for it to fit the vertical field of view, plus a
@@ -158,7 +193,7 @@ def main():
         d = Vector((math.cos(e_) * math.cos(a_),
                     math.cos(e_) * math.sin(a_),
                     math.sin(e_)))
-        loc = d * dist
+        loc = target + d * dist
         z = d.normalized()
         x = Vector((0, 0, 1)).cross(z).normalized()
         y = z.cross(x)
