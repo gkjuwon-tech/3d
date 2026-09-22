@@ -1,0 +1,63 @@
+[{"stream_name":"stdout","time":1.071694545,"data":"[install] da3: depth-anything-3 addict\n"}
+,{"stream_name":"stdout","time":36.69659564,"data":"opencv-contrib-python 4.13.0.92 requires numpy\u003e=2; python_version \u003e= \"3.9\", but you have numpy 1.26.4 which is incompatible.\n"}
+,{"stream_name":"stdout","time":36.696675869,"data":"shap 0.51.0 requires numpy\u003e=2, but you have numpy 1.26.4 which is incompatible.\n"}
+,{"stream_name":"stdout","time":42.345927702,"data":"[11:17:37] torch 2.10.0+cu128 cuda True\n"}
+,{"stream_name":"stdout","time":42.390949278,"data":"[11:17:37] gpu: Tesla T4\n"}
+,{"stream_name":"stdout","time":42.400579013,"data":"[11:17:37] input root: /kaggle/input/datasets/gk1212/lucy-m2-views\n"}
+,{"stream_name":"stdout","time":42.41106511,"data":"[11:17:37] views (14): ['01_front', '02_right', '03_back', '04_left', '05_top', '06_bottom', '07_az45_up', '08_az135_up', '09_az225_up', '10_az315_up', '11_az45_dn', '12_az135_dn', '13_az225_dn', '14_az315_dn']\n"}
+,{"stream_name":"stdout","time":42.475749633,"data":"[11:17:37] reference resolution 2048\n"}
+,{"stream_name":"stdout","time":42.475771389,"data":"[11:17:37] -- skipping moge2\n"}
+,{"stream_name":"stdout","time":42.475777535,"data":"[11:17:37] -- skipping vggt\n"}
+,{"stream_name":"stderr","time":43.719721963,"data":"/usr/local/lib/python3.12/dist-packages/moviepy/config_defaults.py:47: SyntaxWarning: invalid escape sequence '\\P'\n"}
+,{"stream_name":"stderr","time":43.719769397,"data":"  IMAGEMAGICK_BINARY = r\"C:\\Program Files\\ImageMagick-6.8.8-Q16\\magick.exe\"\n"}
+,{"stream_name":"stderr","time":43.846941717,"data":"/usr/local/lib/python3.12/dist-packages/moviepy/video/io/ffmpeg_reader.py:294: SyntaxWarning: invalid escape sequence '\\d'\n"}
+,{"stream_name":"stderr","time":43.846970304,"data":"  lines_video = [l for l in lines if ' Video: ' in l and re.search('\\d+x\\d+', l)]\n"}
+,{"stream_name":"stderr","time":43.847232622,"data":"/usr/local/lib/python3.12/dist-packages/moviepy/video/io/ffmpeg_reader.py:367: SyntaxWarning: invalid escape sequence '\\d'\n"}
+,{"stream_name":"stderr","time":43.847249482,"data":"  rotation_lines = [l for l in lines if 'rotate          :' in l and re.search('\\d+$', l)]\n"}
+,{"stream_name":"stderr","time":43.847256331,"data":"/usr/local/lib/python3.12/dist-packages/moviepy/video/io/ffmpeg_reader.py:370: SyntaxWarning: invalid escape sequence '\\d'\n"}
+,{"stream_name":"stderr","time":43.847262592,"data":"  match = re.search('\\d+$', rotation_line)\n"}
+,{"stream_name":"stderr","time":46.602193833,"data":"error: XDG_RUNTIME_DIR not set in the environment.\n"}
+,{"stream_name":"stderr","time":46.670248406,"data":"ALSA lib confmisc.c:855:(parse_card) cannot find card '0'\n"}
+,{"stream_name":"stderr","time":46.670881605,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":46.670898681,"data":"ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings\n"}
+,{"stream_name":"stderr","time":46.670903963,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":46.670914174,"data":"ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name\n"}
+,{"stream_name":"stderr","time":46.670917586,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":46.670920957,"data":"ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory\n"}
+,{"stream_name":"stderr","time":46.670924172,"data":"ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default\n"}
+,{"stream_name":"stderr","time":46.778513765,"data":"ALSA lib confmisc.c:855:(parse_card) cannot find card '0'\n"}
+,{"stream_name":"stderr","time":46.778554535,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_card_inum returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":46.778561309,"data":"ALSA lib confmisc.c:422:(snd_func_concat) error evaluating strings\n"}
+,{"stream_name":"stderr","time":46.778566147,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":46.778569997,"data":"ALSA lib confmisc.c:1334:(snd_func_refer) error evaluating name\n"}
+,{"stream_name":"stderr","time":46.778574144,"data":"ALSA lib conf.c:5178:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory\n"}
+,{"stream_name":"stderr","time":46.77857808,"data":"ALSA lib conf.c:5701:(snd_config_expand) Evaluate error: No such file or directory\n"}
+,{"stream_name":"stderr","time":46.778582037,"data":"ALSA lib pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM default\n"}
+,{"stream_name":"stdout","time":47.008697522,"data":"\u001b[93m[WARN ] Dependency `gsplat` is required for rendering 3DGS. Install via: pip install git+https://github.com/nerfstudio-project/gsplat.git@0b4dddf04cb687367602c01196913cde6a743d70\u001b[0m\n"}
+,{"stream_name":"stdout","time":54.614884262,"data":"[11:17:49] == depth-anything/DA3-BASE  subsets: [('c6', 6), ('c6d2', 8), ('c6d4', 10), ('all', 14)]\n"}
+,{"stream_name":"stderr","time":54.767702391,"data":"Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n"}
+,{"stream_name":"stdout","time":55.000813196,"data":"\u001b[97m[INFO ] using MLP layer as FFN\u001b[0m\n"}
+,{"stream_name":"stdout","time":65.573573199,"data":"\u001b[97m[INFO ] Processed Images Done taking 0.20971155166625977 seconds. Shape:  torch.Size([6, 3, 504, 504])\u001b[0m\n"}
+,{"stream_name":"stdout","time":66.071090995,"data":"\u001b[97m[INFO ] Selecting reference view using strategy: saddle_balanced\u001b[0m\n"}
+,{"stream_name":"stdout","time":68.663866016,"data":"\u001b[97m[INFO ] Model Forward Pass Done. Time: 3.0825159549713135 seconds\u001b[0m\n"}
+,{"stream_name":"stdout","time":68.675703136,"data":"\u001b[97m[INFO ] Conversion to Prediction Done. Time: 0.011720657348632812 seconds\u001b[0m\n"}
+,{"stream_name":"stdout","time":69.022204589,"data":"[11:18:03]    c6: 6 views OK\n"}
+,{"stream_name":"stdout","time":70.484102052,"data":"\u001b[97m[INFO ] Processed Images Done taking 0.23978710174560547 seconds. Shape:  torch.Size([8, 3, 504, 504])\u001b[0m\n"}
+,{"stream_name":"stdout","time":70.516775134,"data":"\u001b[97m[INFO ] Selecting reference view using strategy: saddle_balanced\u001b[0m\n"}
+,{"stream_name":"stdout","time":73.026932039,"data":"\u001b[97m[INFO ] Model Forward Pass Done. Time: 2.5369224548339844 seconds\u001b[0m\n"}
+,{"stream_name":"stdout","time":73.030974122,"data":"\u001b[97m[INFO ] Conversion to Prediction Done. Time: 0.003958702087402344 seconds\u001b[0m\n"}
+,{"stream_name":"stdout","time":73.457217995,"data":"[11:18:08]    c6d2: 8 views OK\n"}
+,{"stream_name":"stdout","time":75.31708382,"data":"\u001b[97m[INFO ] Processed Images Done taking 0.29300546646118164 seconds. Shape:  torch.Size([10, 3, 504, 504])\u001b[0m\n"}
+,{"stream_name":"stdout","time":75.354017277,"data":"\u001b[97m[INFO ] Selecting reference view using strategy: saddle_balanced\u001b[0m\n"}
+,{"stream_name":"stdout","time":76.198711276,"data":"[11:18:10]    c6d4 (10 views): OOM, skipped\n"}
+,{"stream_name":"stdout","time":78.3982621,"data":"\u001b[97m[INFO ] Processed Images Done taking 0.39895057678222656 seconds. Shape:  torch.Size([14, 3, 504, 504])\u001b[0m\n"}
+,{"stream_name":"stdout","time":78.443439465,"data":"\u001b[97m[INFO ] Selecting reference view using strategy: saddle_balanced\u001b[0m\n"}
+,{"stream_name":"stdout","time":79.597338262,"data":"[11:18:14]    all (14 views): OOM, skipped\n"}
+,{"stream_name":"stdout","time":79.871163865,"data":"[11:18:14] done: ['da3_c6_depth', 'da3_c6d2_depth'] | failed: []\n"}
+,{"stream_name":"stderr","time":84.900997335,"data":"/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":84.901033616,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":85.154576134,"data":"/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":85.15460731,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":85.835121184,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":86.664620819,"data":"[NbConvertApp] Writing 336376 bytes to __results__.html\n"}
+]

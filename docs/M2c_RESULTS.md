@@ -12,8 +12,8 @@ at elevation ±45. Fourteen views total. Three things were expected of them.
 | purpose | result |
 |---|---|
 | silhouette constraints | **confirmed** — Chamfer halved |
-| registration overlap | **refuted** for VGGT; DA3 pending |
-| in-distribution input | visually clear, pending measurement |
+| registration overlap | **refuted** — for both models |
+| in-distribution input | visually clear; not isolable from the above |
 
 ## 1. Silhouette constraints — confirmed
 
@@ -83,14 +83,92 @@ Orthographic tolerance is a per-model property.
 Testing that costs one more render pass under a long lens, and is the last
 experiment left from the original pair.
 
-## 3. In-distribution input — pending
+## 2b. Registration overlap — refuted for DA3 too
 
-Visually unambiguous: the diagonal views look like photographs of a statue,
-which is the standard framing for photographing sculpture, while the top-down
-orthographic view is an unidentifiable blob. The measurement is DA3's
-registration error and depth on the extended set.
+DA3 at fourteen views does not fit a T4, so it dropped to the base backbone,
+which makes that run incomparable to M2b's large-backbone result: the model and
+the view set moved together. Holding the backbone fixed and varying only the
+views gives the comparison that answers the question.
 
-## Status
+Registration error in degrees, DA3-BASE, after the best global rotation:
+
+| view | 6 views | 8 views (+2 diagonals) |
+|---|---|---|
+| 01_front | 20.1 | 29.3 |
+| 02_right | 21.6 | 27.1 |
+| 03_back | 25.2 | 16.9 |
+| 04_left | 14.4 | 14.6 |
+| 05_top | 16.3 | 26.6 |
+| **06_bottom** | **168.0** | **174.3** |
+| 07_az45_up | – | 23.7 |
+| 12_az135_dn | – | 59.0 |
+| mean, canonical six | 44.3 | 48.1 |
+
+Adding the diagonal bridge did not move the bottom view. It stayed on the
+wrong side of the object.
+
+Ten and fourteen view subsets did not fit in memory, so the series stops at
+eight. Two points is thin, but the direction is not ambiguous and the
+prediction was a large improvement, not a small one.
+
+### The bottom view is never registered, by anything
+
+| model | views | 06_bottom |
+|---|---|---|
+| VGGT-1B | 6 | all views stacked |
+| VGGT-1B | 14 | all views stacked |
+| DA3-LARGE | 6 | 161.5° |
+| DA3-BASE | 6 | 168.0° |
+| DA3-BASE | 8 (+2 diagonals) | 174.3° |
+
+Two architectures, two backbone sizes, with and without diagonal bridges. The
+bottom view is placed on the far side of the object every time.
+
+The overlap explanation from M2b is refuted. What remains is the projection
+and the ambiguity M1 found. Under orthographic projection opposite views have
+identical silhouettes, so only appearance can tell top from bottom, and for
+this subject both are foreshortened blobs with wings at 7.3% coverage. A
+diagonal view bridges the geometry but does not break that tie: it also sees a
+silhouette that is consistent with either pole.
+
+Meanwhile the pinhole assumption gives the pose head nothing to work with — an
+orthographic image has no focal length, no vanishing point, no perspective cue.
+DA3 tolerates this better than VGGT, getting the ring right, but neither
+resolves the pole it cannot disambiguate by appearance.
+
+## 3. In-distribution input
+
+Visually unambiguous, and not separable from the above with this data. The
+diagonal views look like photographs of a statue — three-quarter is the
+standard framing for photographing sculpture — where the top-down orthographic
+view is an unidentifiable blob. But their own registration errors, 23.7° and
+59.0°, are no better than the canonical views', so being in distribution did
+not by itself produce a good camera solution.
+
+The clean test of this is the one experiment still outstanding: re-render under
+a long lens and measure again. That changes the projection while leaving the
+subject and the view directions alone, which is the only way left to separate
+"orthographic breaks the pose head" from "this subject's poles are ambiguous".
+
+## Conclusion
+
+Three-quarter views were expected to do three jobs. They do one of them, and
+that one is worth having: **Chamfer halved, from a six-second carve with the
+containment guarantee intact, beating every depth model measured in M2 and
+M2b.** Silhouettes remain the most valuable signal in this pipeline.
+
+They do not fix registration, for either model, and the explanation offered in
+M2b is refuted. The bottom view stays on the wrong side of the object in every
+configuration tested.
+
+That leaves the plan unchanged in its structure and sharper in its weighting.
+Add diagonal views: they are cheap and they halve the error. Do not expect a
+multi-view network to perform the integration on orthographic input — VGGT's
+joint point map covers 7% of the true surface after being handed a similarity
+transform for free. The integration stays where the plan put it, in an
+optimization over a shape that the silhouettes bound.
+
+## Notes
 
 DA3 on fourteen views needs about 20 GiB against the T4's 14.56, since
 attention across views is quadratic in view count. It runs down a ladder —
