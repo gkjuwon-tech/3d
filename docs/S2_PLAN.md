@@ -83,6 +83,14 @@ Three details that matter:
 blows up. Those pixels get dropped from the gradient term and the solve
 interpolates across them. Standard, and the hull anchor keeps the gap honest.
 
+**Low-pass the interior anchor.** The hull's surface carries wide terraces
+from the voxel grid and flat facets from the silhouette cones. Sharp steps are
+gone after smoothing -- edges turning more than 30 degrees fell from 24.89% to
+0.40% -- but the wide terraces remain, and the anchor term is the one path by
+which they could leak into the solved depth. Blurring `h` before using it as
+the *interior* anchor removes that path; the rim anchor stays unfiltered,
+because there it is exact.
+
 **The anchor is everywhere, not only at the rim.** `w_anchor` is large at the
 rim and small but non-zero in the interior. Normal integration accumulates
 error with distance from its boundary, so a wide flat region far from any
