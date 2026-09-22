@@ -27,3 +27,12 @@ refs/*/normal/
 out/*.ply
 out/*.npz
 out/*_views*/
+
+# npy mirrors of the float passes, written by tools/exr_to_npy.py
+refs/*/depth_npy/
+refs/*/normal_npy/
+out/*/depth_npy/
+out/*/normal_npy/
+
+# the uploaded copy of the view set; the originals are under refs/
+kaggle/views/
