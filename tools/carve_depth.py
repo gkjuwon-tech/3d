@@ -45,12 +45,16 @@ vh = _load("visual_hull")
 
 
 def recover_depth(views_dir, hull_dir, view, meta, budget, w_inner,
-                  anchor_blur, nz_floor, maxiter):
+                  anchor_blur, nz_floor, maxiter, normals_dir=None):
     gt_path = os.path.join(views_dir, "depth_npy", f"{view}.npy")
     hull = np.load(os.path.join(hull_dir, "depth_npy", f"{view}.npy"))
-    n = np.load(os.path.join(views_dir, "normal_npy", f"{view}.npy"))
-    R = np.array(meta["views"][view]["matrix_world"])[:3, :3]
-    n = (n.reshape(-1, 3) @ R).reshape(n.shape)
+    if normals_dir:
+        # already camera-space, e.g. solved by photometric stereo
+        n = np.load(os.path.join(normals_dir, f"{view}.npy")).astype(np.float64)
+    else:
+        n = np.load(os.path.join(views_dir, "normal_npy", f"{view}.npy"))
+        R = np.array(meta["views"][view]["matrix_world"])[:3, :3]
+        n = (n.reshape(-1, 3) @ R).reshape(n.shape)
     n /= np.linalg.norm(n, axis=2, keepdims=True).clip(1e-9)
     rgb = np.asarray(Image.open(os.path.join(views_dir, "rgb", f"{view}.png")
                                 ).convert("L"), dtype=np.float64) / 255.0
@@ -141,6 +145,9 @@ def main():
     ap.add_argument("--anchor-blur", type=float, default=8.0)
     ap.add_argument("--nz-floor", type=float, default=0.15)
     ap.add_argument("--maxiter", type=int, default=4000)
+    ap.add_argument("--normals-dir", default=None,
+                   help="camera-space normals per view; default is the view "
+                        "set's own ground-truth normal pass")
     ap.add_argument("--only-views", default=None)
     ap.add_argument("--quorum", type=int, default=0,
                    help="views that must independently agree a voxel is empty "
@@ -176,7 +183,7 @@ def main():
         d, hit, hull, gt = recover_depth(args.views, args.hull_views, v, meta,
                                          args.budget, args.w_inner,
                                          args.anchor_blur, args.nz_floor,
-                                         args.maxiter)
+                                         args.maxiter, args.normals_dir)
         note = ""
         if gt is not None:
             m = hit & np.isfinite(d) & (gt < BG)
