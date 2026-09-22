@@ -86,8 +86,16 @@ def recover_depth(views_dir, hull_dir, view, meta, budget, w_inner,
     return z, hit, hull, gt
 
 
-def carve_view(occ, centers, meta, view, depth, margin, slab=24):
-    """Remove voxels in front of the recovered surface, in the view's frame."""
+def carve_view(occ, centers, meta, view, depth, margin, slab=24, votes=None):
+    """Mark voxels in front of the recovered surface, in the view's frame.
+
+    With `votes`, nothing is removed here: each view adds one vote per voxel it
+    considers empty, and removal waits for a quorum. A carve is an intersection,
+    so a single view's worst few percent would otherwise decide those voxels for
+    everyone -- which is what shredded one side of the first result while the
+    other side came out clean. Per-view errors land in different places, which
+    is exactly what a quorum exploits.
+    """
     info = meta["views"][view]
     m = np.array(info["matrix_world"], dtype=np.float64)
     right, up, back, loc = m[:3, 0], m[:3, 1], m[:3, 2], m[:3, 3]
@@ -112,8 +120,12 @@ def carve_view(occ, centers, meta, view, depth, margin, slab=24):
         col = np.clip(((u / ortho + 0.5) * res).astype(np.int32), 0, res - 1)
         row = np.clip(((0.5 - v / ortho) * res).astype(np.int32), 0, res - 1)
         front = w < (d[row, col] - margin)
-        removed += int((occ[i0:i1] & front).sum())
-        occ[i0:i1] &= ~front
+        if votes is None:
+            removed += int((occ[i0:i1] & front).sum())
+            occ[i0:i1] &= ~front
+        else:
+            votes[i0:i1] += front
+            removed += int((occ[i0:i1] & front).sum())
     return removed
 
 
@@ -130,6 +142,9 @@ def main():
     ap.add_argument("--nz-floor", type=float, default=0.15)
     ap.add_argument("--maxiter", type=int, default=4000)
     ap.add_argument("--only-views", default=None)
+    ap.add_argument("--quorum", type=int, default=0,
+                   help="views that must independently agree a voxel is empty "
+                        "before it is removed; 0 carves on any single view")
     ap.add_argument("--min-touch", type=float, default=50.0,
                    help="a view carves only if its solution rests on the hull "
                         "floor over at least this percent of its pixels. "
@@ -151,6 +166,7 @@ def main():
     views = list(meta["views"])
     if args.only_views:
         views = args.only_views.split(",")
+    votes = np.zeros(occ.shape, dtype=np.uint8) if args.quorum > 0 else None
     start = int(occ.sum())
     print(f"grid {tuple(dims)}  {start:,} voxels  margin {margin:.5f} "
           f"({args.margin_voxels} voxels)")
@@ -175,10 +191,16 @@ def main():
             print(f"  {v:<13} SKIPPED   floor contact {touch:.1f}% < "
                   f"{args.min_touch}%{note}")
             continue
-        removed = carve_view(occ, centers, meta, v, d, margin)
-        print(f"  {v:<13} removed {removed:>9,}  contact {touch:.1f}%{note}"
+        marked = carve_view(occ, centers, meta, v, d, margin, votes=votes)
+        verb = "voted" if votes is not None else "removed"
+        print(f"  {v:<13} {verb} {marked:>9,}  contact {touch:.1f}%{note}"
               f"  {time.time()-t0:.0f}s")
 
+    if votes is not None:
+        hist = np.bincount(votes[occ].ravel(), minlength=16)[:8]
+        print("  votes per occupied voxel: "
+              + "  ".join(f"{i}:{c:,}" for i, c in enumerate(hist) if c))
+        occ &= votes < args.quorum
     print(f"\nremoved {start - occ.sum():,} of {start:,} "
           f"({100*(start-occ.sum())/start:.2f}%)  remaining {occ.sum():,}")
     np.savez_compressed(args.out + "_occ.npz", occ=np.packbits(occ),
