@@ -194,6 +194,18 @@ def run_da3(paths, size, device, repo="depth-anything/DA3-LARGE"):
     depth = np.asarray(getattr(pred, "depth"))
     for i, v in enumerate(VIEWS):
         save("da3_large_depth", v, to_full(np.squeeze(depth[i]), size))
+    # The cameras it solved for are the real test of a multi-view model on this
+    # input: per-view depth can look fine while the views are stacked in one
+    # place, which is exactly how VGGT failed here.
+    for field in ("extrinsics", "intrinsics", "conf", "scale_factor"):
+        val = getattr(pred, field, None)
+        if val is None:
+            continue
+        arr = np.asarray(val.detach().cpu() if hasattr(val, "detach") else val)
+        np.save(f"/kaggle/working/da3_{field}.npy", arr.astype(np.float32))
+        log(f"   saved {field} {arr.shape}")
+        if field == "extrinsics":
+            manifest["notes"]["da3_extrinsics"] = arr.tolist()
     manifest["models"]["da3_large_depth"] = {
         "kind": "depth", "hf": repo, "conditioning": "multi-view (6 images)",
         "note": "larger == farther"}
