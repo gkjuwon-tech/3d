@@ -39,6 +39,9 @@
   "ortho_scale": 1.1,
   "depth_units": "normalized object units; longest bbox axis == 1.0",
   "normal_space": "world",
+  "geometry_pass": "1 sample, filter_size 0.01 (point sampled), no denoise",
+  "beauty_pass": "128 samples, filter_size 1.5, denoised",
+  "background_depth": 10000000000.0,
   "background": "#808080",
   "views": {
     "01_front": {
@@ -86,10 +89,10 @@
         4.371138828673793e-08
       ],
       "outputs": {
-        "rgb": "rgb/01_front.png",
-        "mask": "mask/01_front.png",
         "depth": "depth/01_front.exr",
-        "normal": "normal/01_front.exr"
+        "normal": "normal/01_front.exr",
+        "rgb": "rgb/01_front.png",
+        "mask": "mask/01_front.png"
       }
     },
     "02_right": {
@@ -137,10 +140,10 @@
         4.371138828673793e-08
       ],
       "outputs": {
-        "rgb": "rgb/02_right.png",
-        "mask": "mask/02_right.png",
         "depth": "depth/02_right.exr",
-        "normal": "normal/02_right.exr"
+        "normal": "normal/02_right.exr",
+        "rgb": "rgb/02_right.png",
+        "mask": "mask/02_right.png"
       }
     },
     "03_back": {
@@ -188,10 +191,10 @@
         4.371138828673793e-08
       ],
       "outputs": {
-        "rgb": "rgb/03_back.png",
-        "mask": "mask/03_back.png",
         "depth": "depth/03_back.exr",
-        "normal": "normal/03_back.exr"
+        "normal": "normal/03_back.exr",
+        "rgb": "rgb/03_back.png",
+        "mask": "mask/03_back.png"
       }
     },
     "04_left": {
@@ -239,10 +242,10 @@
         4.371138828673793e-08
       ],
       "outputs": {
-        "rgb": "rgb/04_left.png",
-        "mask": "mask/04_left.png",
         "depth": "depth/04_left.exr",
-        "normal": "normal/04_left.exr"
+        "normal": "normal/04_left.exr",
+        "rgb": "rgb/04_left.png",
+        "mask": "mask/04_left.png"
       }
     },
     "05_top": {
@@ -290,10 +293,10 @@
         -1.0
       ],
       "outputs": {
-        "rgb": "rgb/05_top.png",
-        "mask": "mask/05_top.png",
         "depth": "depth/05_top.exr",
-        "normal": "normal/05_top.exr"
+        "normal": "normal/05_top.exr",
+        "rgb": "rgb/05_top.png",
+        "mask": "mask/05_top.png"
       }
     },
     "06_bottom": {
@@ -341,10 +344,10 @@
         1.0
       ],
       "outputs": {
-        "rgb": "rgb/06_bottom.png",
-        "mask": "mask/06_bottom.png",
         "depth": "depth/06_bottom.exr",
-        "normal": "normal/06_bottom.exr"
+        "normal": "normal/06_bottom.exr",
+        "rgb": "rgb/06_bottom.png",
+        "mask": "mask/06_bottom.png"
       }
     }
   }

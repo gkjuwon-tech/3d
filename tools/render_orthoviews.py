@@ -35,6 +35,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
 import sys
 
@@ -269,22 +270,35 @@ def setup_camera(scene, ortho_scale):
 
 
 def rename_frame_output(node_dir, view, ext):
-    """File Output nodes append the frame number; fold it back into the name."""
-    written = [f for f in os.listdir(node_dir) if f.endswith(ext)]
+    """File Output nodes append the frame number; fold it back into the name.
+
+    Match the frame-numbered name explicitly. Picking the alphabetically last
+    file instead looks right on an empty directory and silently swaps views on
+    a re-render, because an earlier view's finished "06_bottom.png" sorts after
+    the "01_front_0001.png" just written.
+    """
+    pattern = re.compile(re.escape(view) + r"_\d+" + re.escape(ext) + r"$")
+    written = [f for f in os.listdir(node_dir) if pattern.match(f)]
     if not written:
         return None
-    src = os.path.join(node_dir, sorted(written)[-1])
+    if len(written) > 1:
+        written.sort(key=lambda f: os.path.getmtime(os.path.join(node_dir, f)))
+    src = os.path.join(node_dir, written[-1])
     dst = os.path.join(node_dir, f"{view}{ext}")
-    if src != dst:
-        if os.path.exists(dst):
-            os.remove(dst)
-        os.rename(src, dst)
+    if os.path.exists(dst):
+        os.remove(dst)
+    os.rename(src, dst)
     return dst
 
 
 def main():
     args = parse_args()
     out = os.path.abspath(args.out)
+    if os.path.isdir(out) and not args.only:
+        # A full run owns the whole view set; stale files from a previous run
+        # must not survive into it.
+        for sub in ("rgb", "mask", "depth", "normal", "preview", ".unused"):
+            shutil.rmtree(os.path.join(out, sub), ignore_errors=True)
     os.makedirs(out, exist_ok=True)
 
     clear_scene()
