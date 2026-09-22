@@ -190,83 +190,73 @@ def _is_diag(view):
     return view.endswith("_up") or view.endswith("_dn")
 
 
-def run_da3(paths, size, device, repo="depth-anything/DA3-LARGE"):
+def run_da3(paths, size, device, repo="depth-anything/DA3-BASE"):
+    """Run one backbone over several view subsets.
+
+    Comparing a 14-view run against M2b's 6-view run is not a comparison: the
+    14-view run had to drop to the base backbone for memory, so the model
+    changed along with the view set. Holding the backbone fixed and varying
+    only the views is the measurement that answers whether diagonals help
+    registration.
+    """
     import gc
 
     import torch
     from depth_anything_3.api import DepthAnything3
 
-    # Attention across views is quadratic in view count, so the T4 cannot hold
-    # the large backbone over fourteen views. Step down along two axes --
-    # backbone first, then view count -- and record which rung produced the
-    # result, since a result from a reduced set is not the same measurement.
-    #
-    # The reduced sets keep diagonals on BOTH sides. Dropping all the downward
-    # diagonals would be cheapest -- they carve 0.0% -- but they are exactly
-    # the views that bridge the ring to the bottom view, and whether that
-    # bridge fixes the bottom view's registration is the question being asked.
-    # Halving by azimuth keeps a bridge to each pole.
-    def keep(names):
-        return [v for v in VIEWS if not _is_diag(v) or v in names]
+    canonical = [v for v in VIEWS if not _is_diag(v)]
+    subsets = [
+        ("c6", canonical),
+        ("c6d2", canonical + ["07_az45_up", "12_az135_dn"]),
+        ("c6d4", canonical + ["07_az45_up", "09_az225_up",
+                              "12_az135_dn", "14_az315_dn"]),
+        ("all", list(VIEWS)),
+    ]
 
-    half = {"07_az45_up", "09_az225_up", "12_az135_dn", "14_az315_dn"}
-    quarter = {"07_az45_up", "12_az135_dn"}
-    ladder = [(repo, list(VIEWS)),
-              ("depth-anything/DA3-BASE", list(VIEWS)),
-              ("depth-anything/DA3-BASE", keep(half)),
-              ("depth-anything/DA3-BASE", keep(quarter))]
-
-    def free(mb_note):
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        log(f"   {mb_note}: {torch.cuda.memory_allocated()/2**30:.2f} GiB held")
-
-    model = pred = None
-    views = []
-    for rung, (model_id, cand) in enumerate(ladder):
+    log(f"== {repo}  subsets: {[(n, len(v)) for n, v in subsets]}")
+    model = DepthAnything3.from_pretrained(repo).to(device).eval()
+    done = {}
+    for name, views in subsets:
+        views = [v for v in views if v in paths]
         try:
-            log(f"== {model_id}  {len(cand)} views  (rung {rung})")
-            model = DepthAnything3.from_pretrained(model_id).to(device).eval()
             imgs = [np.asarray(Image.open(paths[v]).convert("RGB"))
-                    for v in cand]
+                    for v in views]
             with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
                 pred = model.inference(imgs)
-            views = cand
-            break
         except Exception as exc:
             if "out of memory" not in str(exc).lower():
                 raise
-            log(f"   OOM on rung {rung}: {str(exc)[:110]}")
-            # Rebind the names themselves. Deleting a local alias taken from
-            # locals() drops the alias and leaves the model on the GPU, which
-            # is how three backbones ended up resident at once.
-            model = None
+            log(f"   {name} ({len(views)} views): OOM, skipped")
             pred = None
-            imgs = None
-            free("after releasing rung")
-    if not views:
-        raise RuntimeError("every rung ran out of memory")
-
-    log(f"   prediction fields: "
-        f"{[a for a in dir(pred) if not a.startswith('_')][:20]}")
-    depth = np.asarray(getattr(pred, "depth"))
-    for i, v in enumerate(views):
-        save("da3_large_depth", v, to_full(np.squeeze(depth[i]), size))
-    for field in ("extrinsics", "intrinsics", "conf", "scale_factor"):
-        val = getattr(pred, field, None)
-        if val is None:
+            gc.collect()
+            torch.cuda.empty_cache()
             continue
-        arr = np.asarray(val.detach().cpu() if hasattr(val, "detach") else val)
-        np.save(f"/kaggle/working/da3_{field}.npy", arr.astype(np.float32))
-        log(f"   saved {field} {arr.shape}")
-    manifest["models"]["da3_large_depth"] = {
-        "kind": "depth", "hf": model_id, "precision": "fp16 autocast",
-        "conditioning": f"multi-view ({len(views)} images)",
-        "views_used": views, "rung": rung, "note": "larger == farther"}
-    manifest["notes"]["da3_views_used"] = views
-    model = pred = None
-    free("after da3")
+
+        depth = np.asarray(getattr(pred, "depth"))
+        for i, v in enumerate(views):
+            save(f"da3_{name}_depth", v, to_full(np.squeeze(depth[i]), size))
+        for field in ("extrinsics", "intrinsics", "scale_factor"):
+            val = getattr(pred, field, None)
+            if val is None:
+                continue
+            arr = np.asarray(val.detach().cpu() if hasattr(val, "detach")
+                             else val)
+            np.save(f"/kaggle/working/da3_{name}_{field}.npy",
+                    arr.astype(np.float32))
+        manifest["models"][f"da3_{name}_depth"] = {
+            "kind": "depth", "hf": repo, "precision": "fp16 autocast",
+            "conditioning": f"multi-view ({len(views)} images)",
+            "views_used": views, "subset": name,
+            "note": "larger == farther"}
+        done[name] = views
+        log(f"   {name}: {len(views)} views OK")
+        pred = None
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    manifest["notes"]["da3_subsets"] = {k: v for k, v in done.items()}
+    if not done:
+        raise RuntimeError("no subset fitted in memory")
 
 
 def main():
