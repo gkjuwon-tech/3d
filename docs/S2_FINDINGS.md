@@ -180,3 +180,86 @@ Two readings, and they are distinguishable by experiment:
 
 Reading 1 is cheap and decides whether the subject is the problem. Reading 2 is
 the more robust design regardless of the answer.
+
+
+---
+
+# Round three: the actual blocker was depth discontinuities
+
+Both readings offered at the end of round two were wrong, and saying so is the
+point of writing them down. Band-limiting Lucy would have tuned the subject
+until the method passed. Cross-view voting only fixes *independent* errors, and
+every view's integration drifts the same way from the same kind of normals, so
+a vote would have ratified the bias.
+
+## The reference was the broken thing
+
+The whole diagnosis rested on one statistic: the correlation between the
+gradient implied by the normals and the gradient of the true depth, measured at
+0.15. That was read as "the normals are bad". It is not what it means.
+
+| exclusion | edges kept | gx correlation | RMS ratio |
+|---|---|---|---|
+| none | 100% | +0.150 | 0.119 |
+| drop \|Δd\| > 20× median | 99.1% | **+0.947** | 0.928 |
+| drop \|Δd\| > 8× median | 98.9% | **+0.984** | 0.981 |
+| drop \|Δd\| > 4× median | 96.5% | +0.989 | 1.007 |
+
+**Removing 1% of pixels moves the agreement from 0.15 to 0.98.** The normals
+were never the problem. About 2% of adjacent-pixel pairs sit across a *depth
+discontinuity* — a fold passing in front of the body, a wing crossing a
+shoulder — where the two pixels are on different surfaces entirely. Their depth
+difference has nothing to do with any local slope, and it dominated every
+variance statistic and injected a false jump into every integration path that
+crossed it.
+
+Two hypotheses died getting here, both mine:
+
+- *36 triangles per pixel makes the surface sub-pixel noise.* No: the local
+  depth standard deviation in a 3×3 window is 0.00037, against a hull error of
+  0.0196. The surface is smooth at pixel scale. Median slope from depth is
+  0.59, from normals 0.58 — they agree to 2%.
+- *The normal pass is smooth-shaded while depth is geometric.* Re-rendered one
+  view flat-shaded: the numbers are identical to four decimal places.
+
+## Finding the jumps without an answer key
+
+Ground truth marks them; production cannot. Detectors, scored against the true
+discontinuities:
+
+| detector | recall | precision | edges cut |
+|---|---|---|---|
+| hull depth jump > 4× | 5.5% | 5.0% | 2.0% |
+| image edge, top 1% | 23.0% | 42.7% | 1.0% |
+| image edge, top 3% | 42.6% | 26.4% | 3.0% |
+| \|n_z\| < 0.2 | 34.7% | **58.5%** | 1.1% |
+| \|n_z\| < 0.35 | **57.3%** | 23.7% | 4.5% |
+
+The hull's own depth is nearly useless for this. Grazing normals and image
+edges both work, and they fire on different jumps.
+
+## What that buys
+
+Front view, ground-truth normals, against a hull baseline of 0.01985:
+
+| n_z cut | image-edge cut | MAE | vs hull |
+|---|---|---|---|
+| 0.15 | none | 0.01765 | +11.1% |
+| 0.15 | top 3% | 0.01680 | +15.4% |
+| 0.15 | top 7% | **0.01567** | **+21.0%** |
+| 0.35 | top 7% | 0.01576 | +20.6% |
+
+Cutting the integration graph at image edges nearly doubles the gain, from
++11% to +21%, by refusing to integrate across boundaries the normals never
+described.
+
+## Still not safe to carve with
+
+The estimate lands behind the truth on 38% of pixels, down from 42% but not
+near zero, and carving to an over-deep surface removes real object. The lever
+is recall: the best detector finds 57% of the jumps, so 43% of them still leak
+into the solve.
+
+That is the next thing to work on, and it is a well-posed problem with a
+scoreboard — detector recall against the measured discontinuity set, and MAE
+against the hull — rather than another guess about what might be wrong.

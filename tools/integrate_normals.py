@@ -116,7 +116,7 @@ def build_rim(hit, width=3):
 
 def solve_view(hull, hit, gx, gy, gok, *, w_rim, w_inner, w_grad, w_smooth,
                anchor_blur, tol, maxiter, pixel_size=1.0, x0=None,
-               pinned=None):
+               pinned=None, edge_w=None, return_edges=False):
     """Screened Poisson solve over the masked pixels.
 
     Gradient equations are scaled by 1/pixel_size so their residuals are in
@@ -173,7 +173,7 @@ def solve_view(hull, hit, gx, gy, gok, *, w_rim, w_inner, w_grad, w_smooth,
         eq += 1
 
     # gradient equations, vectorised per direction
-    def grad_block(shift_axis, g, name):
+    def grad_block(shift_axis, g, name, w_edge=None):
         nonlocal eq
         a = hit.copy()
         b = np.roll(hit, -1, axis=shift_axis)
@@ -188,16 +188,19 @@ def solve_view(hull, hit, gx, gy, gok, *, w_rim, w_inner, w_grad, w_smooth,
         sh = np.roll(idx, -1, axis=shift_axis)
         ib = sh[both]
         m = len(ia)
+        w = np.full(m, w_grad) if w_edge is None else w_edge[both] * w_grad
         r = np.arange(eq, eq + m)
         rows.extend(np.repeat(r, 2).tolist())
         cols.extend(np.stack([ib, ia], 1).ravel().tolist())
-        vals.extend(np.tile([w_grad, -w_grad], m).tolist())
-        rhs.extend((g[both] * w_grad).tolist())
+        vals.extend(np.stack([w, -w], 1).ravel().tolist())
+        rhs.extend((g[both] * w).tolist())
         eq += m
+        edges[name] = (both, ia, ib, g[both])
         return m
 
-    m_y = grad_block(0, gy, "y")
-    m_x = grad_block(1, gx, "x")
+    edges = {}
+    m_y = grad_block(0, gy, "y", None if edge_w is None else edge_w[0])
+    m_x = grad_block(1, gx, "x", None if edge_w is None else edge_w[1])
 
     # anchor equations
     ia = idx[hit]
@@ -226,7 +229,15 @@ def solve_view(hull, hit, gx, gy, gok, *, w_rim, w_inner, w_grad, w_smooth,
 
     out = np.full(hit.shape, np.nan)
     out[hit] = z
-    return out, info, {"unknowns": n_unk, "grad_eqs": m_x + m_y}
+    stats = {"unknowns": n_unk, "grad_eqs": m_x + m_y}
+    if return_edges:
+        res = {}
+        for name, (both, ia, ib, gv) in edges.items():
+            r = np.full(hit.shape, np.nan)
+            r[both] = (z[ib] - z[ia]) - gv
+            res[name] = r
+        stats["residual"] = res
+    return out, info, stats
 
 
 def laplacian_operator(idx, hit):
@@ -255,6 +266,27 @@ def laplacian_operator(idx, hit):
         np.add.at(deg, gi, 1.0)
     vals = deg.tolist() + vals
     return sparse.coo_matrix((vals, (rows, cols)), shape=(n, n)).tocsr()
+
+
+def bilateral_weights(residual, scale, floor=0.02):
+    """Down-weight gradient edges the solve cannot satisfy.
+
+    An edge spanning a depth discontinuity -- a fold passing in front of the
+    body, a wing crossing a shoulder -- carries a jump the normals never
+    described, and integrating across it injects that jump into everything
+    downstream. Measured on ground truth: 1% of edges are such jumps, and
+    excluding them moves the agreement between normal-implied gradient and
+    true gradient from 0.15 to 0.98.
+
+    They are found rather than assumed: solve, look at which edges could not be
+    satisfied, cut those, solve again.
+    """
+    w = {}
+    for k, r in residual.items():
+        a = np.abs(np.nan_to_num(r, nan=0.0))
+        w[k] = 1.0 / (1.0 + (a / max(scale, 1e-12)) ** 2)
+        w[k] = np.maximum(w[k], floor)
+    return (w["y"], w["x"])
 
 
 def score(z, gt, hull, hit):
