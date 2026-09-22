@@ -90,3 +90,93 @@ Two ways to get there, in increasing order of work:
    right end state.
 
 Option 1 reuses the carving machinery already built and is the next step.
+
+
+---
+
+# Round two: relief carving, and what it measured
+
+The plan after the gate test was to stop asserting absolute depth per view, use
+each view's *relief* only, and let the carve's agreement rule resolve the
+offsets. Implemented in `tools/carve_relief.py`. It does not work on this
+subject, and the reason is now measured rather than suspected.
+
+## Two bugs found first, one dangerous
+
+**The unknown case failed open.** Where no estimate existed the depth was set
+to `+inf`, which reads as "the surface is infinitely far back" and carved the
+entire grid. Absence of information now carves nothing.
+
+**Frames were mismatched.** The rendered images are square and span the
+camera's ortho_scale; the grid view spans the voxel grid's extent. Resampling
+one onto the other by pixel index pasted background over the subject, which is
+why the first run found zero usable gradient in every view. Sampling now goes
+through world coordinates.
+
+## What the working code measures
+
+Front view, ground-truth normals, one fragment covering 96.5% of the mask:
+
+```
+placed surface - true surface:  mean +0.1290
+                                5%   +0.0126
+                                95%  +0.1852
+behind the truth (over-carving): 96.3% of pixels
+```
+
+The placed surface sits 0.13 behind the truth — 13% of the object's height.
+A single offset cannot fix it because the relief itself has drifted: the
+integrated shape is wrong over long distances, so no constant makes it fit.
+
+## Why the relief drifts
+
+Measured at the gate: the correlation between the gradient implied by
+ground-truth normals and the actual gradient of ground-truth depth is **0.16
+per pixel**, rising to 0.62 only under heavy smoothing.
+
+The cause is scale. Lucy carries 28 million triangles across roughly 770,000
+covered pixels — **36 triangles per pixel**. The depth difference between
+adjacent pixel centres is a secant across 36 facets; the normal is one facet's.
+They describe different things, and integrating a gradient that is 40% wrong
+accumulates over a thousand pixels into the 0.13 seen above.
+
+## Band-limiting does not rescue it
+
+If the disagreement were pure high-frequency noise, smoothing the normals
+before integrating should help. It does the opposite:
+
+| normal blur | best MAE | vs hull | over-carve |
+|---|---|---|---|
+| none | 0.01765 | **+11.1%** | 41.8% |
+| σ 2 | 0.01886 | +5.0% | 43.2% |
+| σ 4 | 0.01920 | +3.3% | 43.2% |
+| σ 8 | 0.01967 | +0.9% | 42.8% |
+
+And in every configuration the estimate lands behind the truth on roughly 42%
+of pixels. **Carving to a surface that is over-deep on 42% of its area removes
+real object**, which is why containment collapsed from 100% to 0.2% the moment
+the carve was wired up correctly.
+
+## Where this leaves S2
+
+Normal integration on this subject yields at most an 11% depth improvement, and
+is not safe to carve with at any setting tried. The best result came from the
+strongest anchor, which means the hull was doing the work and the normals were
+a small correction — not the other way round.
+
+Two readings, and they are distinguishable by experiment:
+
+1. **The method is wrong for this data.** 36 triangles per pixel is extreme.
+   Generated creature images are band-limited by the generator, so their
+   normals and their depth would describe the same surface. The test is to run
+   the same pipeline against a decimated, smoothed Lucy — band-limiting the
+   *subject* rather than the normals — and see whether integration starts
+   working.
+2. **Per-view integration is the wrong primitive.** Carve by cross-view
+   agreement without ever forming a per-view depth: a voxel goes only when
+   several views independently place the surface behind it. One view being
+   wrong 42% of the time matters much less when three must agree. This is the
+   plan's majority-vote rule applied earlier, before depth is committed.
+
+Reading 1 is cheap and decides whether the subject is the problem. Reading 2 is
+the more robust design regardless of the answer.
