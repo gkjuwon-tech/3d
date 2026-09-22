@@ -1,162 +1,197 @@
-# 3d — Cinder Basilisk
+# 3d
 
-Reference-driven 3D creature pipeline. Stage 1 is the orthographic reference
-sheet: six aligned views of one consistent creature, generated with a
-**reference chain** so the design locks instead of drifting between views.
+**Goal: high-quality 3D geometry from an LLM and a pile of classical
+algorithms — no learned 3D model anywhere in the geometry path.**
 
-## The creature
+A language model writes the images. Everything that touches geometry is a solve
+with a known answer and a scoreboard.
 
-**Cinder Basilisk** — hexapodal volcanic apex predator, ~4 m long, part
-deep-sea crustacean part wingless dragon. Matte black basalt plating with
-molten seams, seven-spine crown fan, four eyes per side, six legs, twelve-ring
-counterweight tail ending in a basalt crystal cluster. Perfectly bilaterally
-symmetric, held in a rigid neutral A-pose so the views stay modelable.
+---
 
-## Stage 2 — 6 views to one mesh
+## What this is
 
-`docs/PLAN.md` is the design for the hard part: fusing the six views into a
-single mesh without it exploding. Short version of the diagnosis — TSDF-style
-depth fusion assumes many observations per surface point, and six orthographic
-views give you one. The plan replaces statistical redundancy with constraints
-(visual hull envelope, watertight implicit surface, bilateral symmetry),
-treats per-view drift and per-view depth scale/shift as free parameters solved
-jointly with the shape instead of as errors to eliminate, and splits the
-frequency bands so surface detail never has to come out of a depth map.
+Text-to-3D today mostly means a generative mesh model: describe a creature,
+get an asset. That works, and it gives you whatever the model felt like
+producing. This project takes the other road — the one where you say exactly
+what the creature looks like from fourteen angles, and the geometry is
+*derived* rather than sampled.
 
-## Two ways to run stage 1
+The pipeline is:
 
-- **Manual (Gemini app / subscription)** — `docs/PROMPT_PACK.md` has the
-  copy-paste prompt blocks, the turn-by-turn chain order, the pass/fail count
-  checklist and repair prompts for each drift symptom. This is the path to use
-  when the API key has no image quota.
-- **Scripted (API)** — `tools/gen_orthoviews.py`, described below. Needs an
-  image-generation quota on the key; the free tier's daily allowance for
-  `gemini-*-image` models runs out fast.
+```
+LLM / diffusion  ->  14 orthographic views  ->  reconstruction  ->  mesh
+                     (front, back, sides,       (algorithms only)
+                      top, bottom, 8 diagonals)
+```
 
-## Stage 1 — orthographic reference sheet
+The hard part is the middle arrow. Generated views of the same creature
+disagree with each other, and every fusion method that assumes they agree
+explodes. This repository is mostly the record of finding out what actually
+survives that.
 
-`tools/gen_orthoviews.py` generates, in order:
+---
 
-| # | view | references fed back in |
-|---|------|------------------------|
-| 1 | front  | — (this one is the master) |
-| 2 | right  | front |
-| 3 | back   | front, right |
-| 4 | left   | front, right, back |
-| 5 | top    | right, back, left (+front) |
-| 6 | bottom | back, left, top (+right) |
+## Status: reconstruction from renders alone works
 
-Each request carries the previously accepted views as image inputs plus an
-explicit "do not redesign anything" instruction. That is the whole trick:
-view *n* is a **rotation** of views 1..n-1, not a fresh interpretation of the
-text prompt.
+Given fourteen renders of an object and nothing else, the pipeline recovers a
+watertight mesh and the result is measured against the mesh the renders came
+from.
 
-The prompt is split into three fixed blocks so only one of them ever varies:
+Test subject: **Stanford Lucy**, 28,055,742 triangles.
 
-- `SUBJECT` — anatomy, locked counts (7 spines, 6 legs, 12 tail rings, 4 eyes
-  per side), pose. Identical in every call.
-- `VIEW` — the only part that changes: camera direction and what must be
-  visible.
-- `STYLE` — orthographic projection, flat even light, no cast shadows, empty
-  #808080 background, one view per image, matched scale and alignment.
+| | value |
+|---|---|
+| **Chamfer distance** | **0.009948** (object height = 1.0) |
+| **Containment** | **100.0000%** of the true surface lies inside the result |
+| Volume ratio vs truth | 1.443× |
+| Output | 2,777,692 triangles, watertight |
+| Carve time | 61 s, CPU |
+| Learned models used | **none** |
 
-### Run it
+Containment is measured on 400,000 points sampled across the true surface.
+Every one of them is inside the reconstruction — the result is a proven outer
+bound, not an approximation that usually works.
+
+The reconstruction cannot produce spikes, holes, flyaway geometry or divergence,
+because voxels only ever leave the volume. There is no code path that adds one.
+
+![ground truth and reconstruction](out/_hull_6_vs_14.jpg)
+
+---
+
+## The pipeline
+
+**1. Ground-truth harness.** A Blender renderer emits six axis-aligned plus
+eight diagonal orthographic views, sharing one camera scale and one centred
+object, with exact silhouettes, point-sampled depth and point-sampled normals.
+A validator checks that the views really describe one object — shared axes must
+agree across views, depth must sit inside the normalized bounding box, normals
+must be unit length.
+
+**2. Silhouette carving.** Conservative space carving over a 261M-voxel grid.
+Each silhouette is dilated by the voxel footprint before the lookup, so a voxel
+survives if *any* part of it projects inside. That is what makes containment
+exact rather than approximate.
+
+**3. Surface refinement.** Normals drive a screened Poisson solve per view,
+anchored on the hull as a one-sided floor, with the integration graph cut at
+depth discontinuities. Carving is by quorum: several views must independently
+agree a voxel is empty before it is removed.
+
+**4. Detail.** High-frequency surface detail bakes to normal and displacement
+maps rather than geometry.
+
+---
+
+## What the measurements found
+
+The interesting content of this repository is the negative results. Every one
+is reproducible and written up in `docs/`.
+
+**Six orthographic views carry three silhouette constraints, not six.** Under
+orthographic projection opposite views have identical silhouettes, so back,
+left and bottom each carve 0.0–0.1% beyond their opposites. Eight diagonal
+views were added; four of them carve, four carve nothing, for the same reason.
+Chamfer halved, 0.0206 → 0.0099. ([M1](docs/M1_RESULTS.md),
+[M1b](docs/M1b_RESULTS.md))
+
+**Monocular depth estimators lose to the hull's own depth.** Marigold, MoGe-2,
+Depth Anything 3 and VGGT were scored per view against the depth of the
+silhouette carve that took six seconds to produce. ([M2](docs/M2_RESULTS.md),
+[M2b](docs/M2b_RESULTS.md))
+
+**Multi-view networks cannot register fourteen orthographic views.** VGGT
+stacks all fourteen in one place — centroids within 0.24 while a single view
+spans 1.61 — and its joint point map covers 4.28% of the true surface after
+being handed a similarity transform for free. DA3 places five views within 11°
+and puts the bottom view 161.5° wrong, on the far side of the object. Adding
+diagonal views, which supply the overlap they supposedly lacked, changes
+nothing. ([M2b](docs/M2b_RESULTS.md))
+
+**Photometric stereo beats the learned normal estimator by five times.**
+
+| | mean angular error |
+|---|---|
+| Marigold normals, ensemble 10 on a T4 | 27.80° |
+| Photometric stereo, 4 known lights | **5.88°** (median 0.76°, 85.8% within 5°) |
+
+Four renders and a 3×3 solve per pixel, published in 1980, against a diffusion
+model from 2024. Single-image shape from shading has one equation and two
+unknowns per pixel, which is why it needs a network to guess; adding lights
+removes the need to guess rather than improving the guess.
+([DEAI_PLAN](docs/DEAI_PLAN.md))
+
+---
+
+## Next milestone: consistency for generated input
+
+Everything above leans on a luxury that generated images remove: the views came
+from one mesh, so the cameras were exact, the silhouettes were exact, and there
+was an answer key. The design for working without all three is complete and
+written up in [GEN_PLAN.md](docs/GEN_PLAN.md).
+
+**Control.** Reference chaining asks a diffusion model to be geometrically
+consistent across fourteen images, which it has no mechanism to be. Instead a
+rough creature is specified in code — skeleton, metaballs, limb chains — and
+its depth, normals and silhouettes from the fourteen cameras become the
+structural condition for generation. Fourteen renders of one object cannot
+disagree about how many legs it has, so the generated images inherit that
+consistency rather than having to be argued into it. Each reconstruction then
+becomes the next round's proxy.
+
+**Correction.** The proxy replaces ground truth as the consistency reference,
+so views can be scored and regenerated without an external answer. Per-view
+drift stays a free parameter solved jointly with the shape, now initialised
+from the proxy. The safety rails need no redesign: conservative carving depends
+on silhouettes being outer bounds rather than correct, and voxels still only
+ever leave.
+
+**Calibration.** Lucy's own views run through the generation path and back,
+and the reconstruction is scored against Lucy. That turns every threshold —
+rejection cut-off, dilation margin, carving budget — into a measured number
+instead of a guess. The ground-truth harness built for the first milestone
+becomes the calibration rig for the generative one.
+
+---
+
+## Repository
+
+```
+tools/
+  render_orthoviews.py   Blender: N orthographic views, beauty + geometry passes
+  inspect_gt.py          validates that a view set describes one object
+  visual_hull.py         conservative space carving, axis-aligned and diagonal
+  eval_hull.py           silhouette IoU, containment, Chamfer, volume
+  integrate_normals.py   screened Poisson depth from normals
+  discontinuity.py       edge-wise detection of depth jumps
+  carve_depth.py         quorum carving from recovered depth
+  photometric.py         lit renders and photometric stereo
+  showcase.py            renders a mesh to be looked at rather than measured
+docs/
+  PLAN.md                the original design, and what measurement did to it
+  M1, M1b, M2, M2b       milestone results, including the negative ones
+  S2_PLAN, S2_FINDINGS   surface refinement: design and where it stands
+  GEN_PLAN.md            generated input: control and correction
+  DEAI_PLAN.md           removing the remaining model from the geometry path
+  PROMPT_PACK.md         reference-chain prompts for manual generation
+```
+
+## Reproduce
 
 ```bash
-cp .env.example .env        # put your key in .env — it is gitignored
-export $(grep -v '^#' .env | xargs)
+./tools/fetch_assets.sh          # Blender + Stanford Lucy, ~1.3 GB
 
-python3 tools/gen_orthoviews.py --out refs/cinder_basilisk --size 2K
-```
-
-Regenerate a single view without losing the chain:
-
-```bash
-python3 tools/gen_orthoviews.py --only 05_top
-```
-
-Kept views are re-read from disk and still fed forward as references, so one
-bad frame costs one call instead of six.
-
-`tools/contact_sheet.py` tiles the six PNGs into `refs/<name>/_sheet.jpg` for
-a quick consistency check.
-
-### Flags
-
-| flag | default | meaning |
-|------|---------|---------|
-| `--out` | `refs/cinder_basilisk` | output directory |
-| `--size` | `2K` | `1K` / `2K` / `4K` |
-| `--only` | – | regenerate just this view |
-| `--max-refs` | `4` | how many prior views to attach |
-
-Model: `gemini-3-pro-image`, 1:1 aspect on every view so the six frames share
-one square canvas and line up when loaded as background planes.
-
-Retries: 429/500/503 back off at 2s, 4s, 8s, 16s.
-
-## Secrets
-
-The API key is read from `GEMINI_API_KEY` only. `.env`, `*.key` and `secrets/`
-are gitignored — no key is ever committed.
-
-## Ground truth: `tools/render_orthoviews.py`
-
-The fusion stage is gated on reconstructing a *known* mesh, so the repo carries
-its own renderer rather than relying on generated images to debug geometry
-code. It takes any mesh and emits six axis-aligned orthographic views sharing
-one camera scale and one centered object, so the frames are aligned by
-construction:
-
-```
-refs/<name>/
-  rgb/<view>.png        flat-lit clay render on a #808080 plate
-  mask/<view>.png       exact silhouette
-  depth/<view>.exr      orthographic depth, float32, normalized object units
-  normal/<view>.exr     world-space normals, float32
-  preview/              viewable depth + camera-space normal maps
-  cameras.json          camera basis, ortho scale, normalization record
-```
-
-Lighting is a uniform white environment dome — even from every direction, no
-cast shadows, and Cycles' global illumination supplies the crevice darkening
-that makes form readable. Bounce count is deliberately low, because light
-bouncing back out of crevices is what flattens a clay render.
-
-```bash
 assets/blender/blender -b -P tools/render_orthoviews.py -- \
     --mesh assets/lucy_le.ply --out refs/lucy_gt \
-    --res 2048 --samples 128 --yaw 180
+    --res 2048 --samples 128 --yaw 180 --aux diagonal8
 
 assets/blender/blender -b -P tools/inspect_gt.py -- --dir refs/lucy_gt
+
+python3 tools/visual_hull.py --views refs/lucy_gt --out out/mesh \
+    --res 1024 --smooth 1.0
+
+python3 tools/eval_hull.py --gt-mesh assets/lucy_le.ply \
+    --views refs/lucy_gt --recon out/mesh.ply --occ out/mesh_occ.npz
 ```
 
-`inspect_gt.py` is the actual test: it measures each view's silhouette extents
-and checks that the shared axes agree across views (front/back/top/bottom must
-report one width, and so on), that depth stays inside the normalized bounding
-box, and that normals are unit length. A view set that fails this is not worth
-feeding to a reconstruction.
-
-### The test subject
-
-Stanford's **Lucy** — 14,027,872 vertices / 28,055,742 triangles, a full-body
-winged figure. Limbs, wings, drapery folds and a raised arm give the deep
-self-occlusion and concavity that a silhouette-based method is worst at, which
-is the point. The distributed PLY is big-endian, which Blender 4.x will not
-read, so `tools/ply_be2le.py` converts it and reports the bounding box.
-
-Lucy is **not** bilaterally symmetric, so the symmetry constraint in the plan
-is an option rather than a premise.
-
-## Mirroring the left side
-
-The creature is perfectly bilaterally symmetric, so the left side view is the
-horizontal mirror of the right — generating it is strictly worse than flipping
-it, because generation reintroduces drift:
-
-```bash
-magick refs/cinder_basilisk/02_right.png -flop refs/cinder_basilisk/04_left.png
-```
-
-The scripted pipeline generates it anyway (for comparison); the manual pack
-tells you to flip instead.
+No GPU required.
