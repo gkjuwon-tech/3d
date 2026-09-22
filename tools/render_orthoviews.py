@@ -63,6 +63,9 @@ def parse_args():
     p.add_argument("--margin", type=float, default=1.10,
                    help="ortho scale multiplier over the longest bbox axis")
     p.add_argument("--only", default=None)
+    p.add_argument("--no-normalize", action="store_true",
+                   help="render the mesh where it already sits, for meshes "
+                        "already in the view set's normalized object space")
     p.add_argument("--yaw", type=float, default=0.0,
                    help="rotate the object about Z (degrees) before rendering, "
                         "to put its actual front toward the front camera")
@@ -121,6 +124,23 @@ def normalize(obj):
         "applied_scale": scale,
         "applied_offset": list(-center * scale),
         "normalized_size": [s * scale for s in size],
+    }
+
+
+def measure_only(obj):
+    """Report the bounding box without moving anything."""
+    bpy.context.view_layer.update()
+    corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    lo = Vector((min(c[i] for c in corners) for i in range(3)))
+    hi = Vector((max(c[i] for c in corners) for i in range(3)))
+    size = hi - lo
+    return {
+        "source_bbox_min": list(lo),
+        "source_bbox_max": list(hi),
+        "source_size": list(size),
+        "applied_scale": 1.0,
+        "applied_offset": [0.0, 0.0, 0.0],
+        "normalized_size": list(size),
     }
 
 
@@ -313,7 +333,7 @@ def main():
         bpy.context.view_layer.update()
         print(f"[yaw   ] rotated {args.yaw} deg about Z", flush=True)
 
-    norm = normalize(obj)
+    norm = measure_only(obj) if args.no_normalize else normalize(obj)
     print(f"[norm  ] normalized size {['%.3f' % s for s in norm['normalized_size']]}",
           flush=True)
     shade_smooth(obj)
