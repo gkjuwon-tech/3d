@@ -1,0 +1,39 @@
+{
+  "grid_dims": [
+    638,
+    384,
+    1065
+  ],
+  "voxel_size": 0.0009765625,
+  "grid_lo": [
+    -0.31111036340297166,
+    -0.18711289020466498,
+    -0.52
+  ],
+  "occupied_voxels": 31079206,
+  "hull_volume": 0.028944766148924828,
+  "mesh_vertices": 1388844,
+  "mesh_faces": 2777692,
+  "mask_threshold": 0.0,
+  "smooth_sigma": 1.0,
+  "iso_level": 0.5,
+  "conservative": true,
+  "dilation_px": 3,
+  "views": [
+    "01_front",
+    "02_right",
+    "03_back",
+    "04_left",
+    "05_top",
+    "06_bottom",
+    "07_az45_up",
+    "08_az135_up",
+    "09_az225_up",
+    "10_az315_up",
+    "11_az45_dn",
+    "12_az135_dn",
+    "13_az225_dn",
+    "14_az315_dn"
+  ],
+  "source_views": "/home/user/3d/refs/lucy_gt"
+}

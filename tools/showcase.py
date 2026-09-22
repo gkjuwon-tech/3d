@@ -64,6 +64,7 @@ def normalize(obj):
     obj.scale = (s, s, s)
     obj.location = -((lo + hi) / 2) * s
     bpy.context.view_layer.update()
+    return ((hi - lo) * s).length / 2  # bounding sphere radius
 
 
 def light(name, kind, loc, energy, size, color=(1, 1, 1)):
@@ -97,7 +98,7 @@ def main():
     obj = import_mesh(os.path.abspath(args.mesh))
     print(f"[mesh] {len(obj.data.vertices):,} verts / "
           f"{len(obj.data.polygons):,} faces", flush=True)
-    normalize(obj)
+    radius = normalize(obj)
     bpy.context.view_layer.objects.active = obj
     bpy.ops.object.shade_smooth()
 
@@ -146,7 +147,13 @@ def main():
 
     for name, (az, el, lens) in SHOTS.items():
         cam_data.lens = lens
-        dist = 2.4 * (50.0 / lens) + 0.9
+        # Frame the bounding sphere rather than guessing a distance: back off
+        # exactly far enough for it to fit the vertical field of view, plus a
+        # margin. The previous constant left the subject adrift in the frame.
+        cam_data.sensor_fit = "VERTICAL"
+        cam_data.sensor_height = 24.0
+        half_fov = math.atan(cam_data.sensor_height / (2.0 * lens))
+        dist = radius / math.sin(half_fov) * 1.06
         a_, e_ = math.radians(az), math.radians(el)
         d = Vector((math.cos(e_) * math.cos(a_),
                     math.cos(e_) * math.sin(a_),
