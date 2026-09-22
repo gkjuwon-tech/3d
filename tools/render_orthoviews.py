@@ -40,7 +40,7 @@ import shutil
 import sys
 
 import bpy
-from mathutils import Euler, Vector
+from mathutils import Euler, Matrix, Vector
 
 # camera name -> (euler XYZ in degrees, unit vector from object to camera)
 VIEWS = {
@@ -53,6 +53,48 @@ VIEWS = {
 }
 
 
+# Auxiliary directions, given as (azimuth, elevation) in degrees, where
+# azimuth 270 is the front view's direction and elevation is measured from the
+# horizontal ring. These sit in the middle of each octant, bridging the ring
+# and the poles.
+AUX_PRESETS = {
+    "none": [],
+    "diagonal8": [("07_az45_up", 45, 45), ("08_az135_up", 135, 45),
+                  ("09_az225_up", 225, 45), ("10_az315_up", 315, 45),
+                  ("11_az45_dn", 45, -45), ("12_az135_dn", 135, -45),
+                  ("13_az225_dn", 225, -45), ("14_az315_dn", 315, -45)],
+    "diagonal4": [("07_az45_up", 45, 45), ("08_az135_up", 135, 45),
+                  ("09_az225_dn", 225, -45), ("10_az315_dn", 315, -45)],
+}
+
+
+def direction_from(azimuth_deg, elevation_deg):
+    az, el = math.radians(azimuth_deg), math.radians(elevation_deg)
+    return Vector((math.cos(el) * math.cos(az),
+                   math.cos(el) * math.sin(az),
+                   math.sin(el)))
+
+
+def matrix_looking_at_origin(direction, distance=2.0):
+    """Camera basis for a camera at `direction * distance` aimed at the origin.
+
+    Blender's camera looks down its local -Z, so local +Z is the direction back
+    toward the camera. Up is world +Z projected off that axis, which keeps the
+    horizon level and matches the canonical views' framing.
+    """
+    z = Vector(direction).normalized()
+    ref = Vector((0, 0, 1))
+    if abs(z.dot(ref)) > 0.999:
+        ref = Vector((0, 1, 0))
+    x = ref.cross(z).normalized()
+    y = z.cross(x).normalized()
+    t = z * distance
+    return Matrix(((x.x, y.x, z.x, t.x),
+                   (x.y, y.y, z.y, t.y),
+                   (x.z, y.z, z.z, t.z),
+                   (0.0, 0.0, 0.0, 1.0)))
+
+
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser()
@@ -63,6 +105,12 @@ def parse_args():
     p.add_argument("--margin", type=float, default=1.10,
                    help="ortho scale multiplier over the longest bbox axis")
     p.add_argument("--only", default=None)
+    p.add_argument("--aux", default="none", choices=sorted(AUX_PRESETS),
+                   help="auxiliary three-quarter views to render alongside the "
+                        "canonical six")
+    p.add_argument("--aux-only", action="store_true",
+                   help="render only the auxiliary views, leaving an existing "
+                        "canonical set in place")
     p.add_argument("--no-normalize", action="store_true",
                    help="render the mesh where it already sits, for meshes "
                         "already in the view set's normalized object space")
@@ -314,7 +362,7 @@ def rename_frame_output(node_dir, view, ext):
 def main():
     args = parse_args()
     out = os.path.abspath(args.out)
-    if os.path.isdir(out) and not args.only:
+    if os.path.isdir(out) and not args.only and not args.aux_only:
         # A full run owns the whole view set; stale files from a previous run
         # must not survive into it.
         for sub in ("rgb", "mask", "depth", "normal", "preview", ".unused"):
@@ -346,12 +394,26 @@ def main():
     nodes = setup_compositor(scene, out)
     cam = setup_camera(scene, ortho_scale)
 
+    aux = AUX_PRESETS[args.aux]
+    plan = {}
+    if not args.aux_only:
+        for name, (euler_deg, direction) in VIEWS.items():
+            plan[name] = ("axis", euler_deg, direction)
+    for name, az, el in aux:
+        plan[name] = ("aux", az, el)
+
     cameras = {}
-    todo = [args.only] if args.only else list(VIEWS)
+    todo = [args.only] if args.only else list(plan)
     for view in todo:
-        euler_deg, direction = VIEWS[view]
-        cam.rotation_euler = Euler([math.radians(a) for a in euler_deg], "XYZ")
-        cam.location = Vector(direction) * 2.0
+        kind, a, b = plan[view]
+        if kind == "axis":
+            cam.rotation_euler = Euler([math.radians(x) for x in a], "XYZ")
+            cam.location = Vector(b) * 2.0
+            euler_deg, direction = a, b
+        else:
+            direction = direction_from(a, b)
+            cam.matrix_world = matrix_looking_at_origin(direction)
+            euler_deg = [math.degrees(x) for x in cam.rotation_euler]
         bpy.context.view_layer.update()
 
         for key, node in nodes.items():
@@ -373,9 +435,11 @@ def main():
         m = cam.matrix_world
         cameras[view] = {
             "type": "ORTHO",
+            "kind": kind,
+            "azimuth_elevation": [a, b] if kind == "aux" else None,
             "ortho_scale": ortho_scale,
-            "location": list(cam.location),
-            "rotation_euler_deg": list(euler_deg),
+            "location": [float(x) for x in cam.location],
+            "rotation_euler_deg": [float(x) for x in euler_deg],
             "matrix_world": [list(r) for r in m],
             "view_direction": list((Vector((0, 0, -1))) @ m.to_3x3().inverted()),
             "outputs": paths,
@@ -398,10 +462,18 @@ def main():
         "beauty_pass": f"{args.samples} samples, filter_size 1.5, denoised",
         "background_depth": 1e10,
         "background": "#808080",
+        "aux_preset": args.aux,
         "views": cameras,
     }
     shutil.rmtree(nodes["_scratch"], ignore_errors=True)
-    with open(os.path.join(out, "cameras.json"), "w") as f:
+    cam_path = os.path.join(out, "cameras.json")
+    if args.aux_only and os.path.exists(cam_path):
+        # merge into the existing canonical record rather than replacing it
+        prev = json.load(open(cam_path))
+        prev["views"].update(cameras)
+        prev["aux_preset"] = args.aux
+        meta = prev
+    with open(cam_path, "w") as f:
         json.dump(meta, f, indent=2)
     print("[done  ] " + out, flush=True)
 

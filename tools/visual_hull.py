@@ -28,21 +28,67 @@ from scipy import ndimage
 from skimage import measure
 
 
-def axis_and_sign(vec):
-    """An axis-aligned unit vector as (axis index, sign)."""
+def axis_and_sign(vec, tol=1e-6):
+    """An axis-aligned unit vector as (axis index, sign), or None."""
     a = int(np.argmax(np.abs(vec)))
-    if abs(abs(vec[a]) - 1.0) > 1e-6 or np.abs(np.delete(vec, a)).max() > 1e-6:
-        raise ValueError(f"camera axis is not axis-aligned: {vec}")
+    if abs(abs(vec[a]) - 1.0) > tol or np.abs(np.delete(vec, a)).max() > tol:
+        return None
     return a, float(np.sign(vec[a]))
 
 
 def view_basis(matrix_world):
     """Camera right/up axes in world space, plus the camera location."""
     m = np.array(matrix_world, dtype=np.float64)
-    right = m[:3, 0]
-    up = m[:3, 1]
-    loc = m[:3, 3]
-    return axis_and_sign(right), axis_and_sign(up), loc
+    return m[:3, 0], m[:3, 1], m[:3, 3]
+
+
+def carve_axis_aligned(occ, sil, centers, right, up, loc, ortho, res_px):
+    """Fast path for a camera whose axes are world axes.
+
+    A voxel's pixel then depends on only two of its three indices, so the view
+    reduces to a 2D lookup broadcast along the third -- no per-voxel projection
+    at all.
+    """
+    (a_u, s_u), (a_v, s_v) = axis_and_sign(right), axis_and_sign(up)
+    u = s_u * centers[a_u] - s_u * loc[a_u]
+    v = s_v * centers[a_v] - s_v * loc[a_v]
+    col = np.clip(((u / ortho + 0.5) * res_px).astype(np.int64), 0, res_px - 1)
+    row = np.clip(((0.5 - v / ortho) * res_px).astype(np.int64), 0, res_px - 1)
+    lut = sil[np.ix_(row, col)]
+    axes = [a_v, a_u]
+    if a_v > a_u:
+        lut = lut.T
+        axes = [a_u, a_v]
+    shape = [1, 1, 1]
+    shape[axes[0]] = lut.shape[0]
+    shape[axes[1]] = lut.shape[1]
+    occ &= lut.reshape(shape)
+
+
+def carve_general(occ, sil, centers, right, up, loc, ortho, res_px, slab=24):
+    """General path for a diagonal camera.
+
+    A voxel's image coordinate is still separable -- u = rx*x + ry*y + rz*z is
+    a sum of three one-dimensional terms -- so it is built by broadcasting
+    rather than by projecting points. Slabs along x bound the peak memory,
+    which otherwise runs to several hundred megabytes of float per view.
+    """
+    nx, ny, nz = occ.shape
+    ux = right[0] * centers[0] - float(right @ loc)
+    uy = right[1] * centers[1]
+    uz = right[2] * centers[2]
+    vx = up[0] * centers[0] - float(up @ loc)
+    vy = up[1] * centers[1]
+    vz = up[2] * centers[2]
+    for i0 in range(0, nx, slab):
+        i1 = min(i0 + slab, nx)
+        u = (ux[i0:i1, None, None] + uy[None, :, None] + uz[None, None, :])
+        v = (vx[i0:i1, None, None] + vy[None, :, None] + vz[None, None, :])
+        col = np.clip(((u / ortho + 0.5) * res_px).astype(np.int32),
+                      0, res_px - 1)
+        row = np.clip(((0.5 - v / ortho) * res_px).astype(np.int32),
+                      0, res_px - 1)
+        occ[i0:i1] &= sil[row, col]
 
 
 def main():
@@ -103,34 +149,23 @@ def main():
 
     for view in wanted:
         info = meta["views"][view]
-        (a_u, s_u), (a_v, s_v), loc = view_basis(info["matrix_world"])
+        right, up, loc = view_basis(info["matrix_world"])
         mask = np.asarray(Image.open(os.path.join(root, "mask", f"{view}.png"))
                           .convert("L"), dtype=np.float32) / 255.0
         sil = mask > args.mask_threshold
         if not args.center_test:
             sil = ndimage.maximum_filter(sil, size=span, mode="constant")
 
-        # world coordinate along each image axis, relative to the camera
-        u = s_u * centers[a_u] - s_u * loc[a_u]
-        v = s_v * centers[a_v] - s_v * loc[a_v]
-        col = np.clip(((u / ortho + 0.5) * res_px).astype(np.int64),
-                      0, res_px - 1)
-        row = np.clip(((0.5 - v / ortho) * res_px).astype(np.int64),
-                      0, res_px - 1)
-
-        lut = sil[np.ix_(row, col)]                 # (len(v), len(u))
-        axes = [a_v, a_u]
-        if a_v > a_u:
-            lut = lut.T
-            axes = [a_u, a_v]
-        shape = [1, 1, 1]
-        shape[axes[0]] = lut.shape[0]
-        shape[axes[1]] = lut.shape[1]
-
+        aligned = (axis_and_sign(right) is not None
+                   and axis_and_sign(up) is not None)
         before = int(occ.sum())
-        occ &= lut.reshape(shape)
+        if aligned:
+            carve_axis_aligned(occ, sil, centers, right, up, loc, ortho, res_px)
+        else:
+            carve_general(occ, sil, centers, right, up, loc, ortho, res_px)
         after = int(occ.sum())
-        print(f"  carve {view:<11} {before:>12,} -> {after:>12,} "
+        print(f"  carve {view:<13}{'axis' if aligned else 'diag':<5}"
+              f"{before:>12,} -> {after:>12,} "
               f"({100.0*(before-after)/max(before,1):5.1f}% removed)")
 
     n_occ = int(occ.sum())
