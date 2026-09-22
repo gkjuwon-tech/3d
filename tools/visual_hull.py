@@ -108,6 +108,14 @@ def main():
                         "costs the outer-bound guarantee")
     ap.add_argument("--use-views", default=None,
                    help="comma-separated subset of view names to carve with")
+    ap.add_argument("--smooth", type=float, default=0.0,
+                   help="gaussian sigma in voxels applied to the occupancy "
+                        "before the isosurface. Marching cubes on a binary "
+                        "grid terraces, and that terracing is high-frequency "
+                        "noise any normal-driven refinement would chase")
+    ap.add_argument("--level", type=float, default=0.5,
+                   help="isosurface level. Below 0.5 dilates, which is how "
+                        "smoothing keeps the containment guarantee")
     ap.add_argument("--pad", type=float, default=0.02,
                     help="fraction of the bounding box added around the grid")
     args = ap.parse_args()
@@ -175,8 +183,17 @@ def main():
 
     # Pad so the isosurface closes if the hull touches the grid boundary.
     padded = np.pad(occ.astype(np.float32), 1)
+    if args.smooth > 0:
+        padded = ndimage.gaussian_filter(padded, args.smooth, truncate=3.0)
+        print(f"smoothed    : sigma {args.smooth} voxels, level {args.level}")
+        # The surface no longer bounds the original voxels, so the volume the
+        # mesh actually encloses is what containment must be measured against.
+        occ = padded[1:-1, 1:-1, 1:-1] >= args.level
+        n_occ = int(occ.sum())
+        vol = n_occ * h ** 3
+        print(f"re-occupied : {n_occ:,} voxels  volume {vol:.6f}")
     verts, faces, normals, _ = measure.marching_cubes(
-        padded, level=0.5, spacing=(h, h, h))
+        padded, level=args.level, spacing=(h, h, h))
     verts += lo - h  # undo the pad, move to object space
 
     print(f"mesh        : {len(verts):,} verts / {len(faces):,} faces")
@@ -198,6 +215,8 @@ def main():
         "mesh_vertices": int(len(verts)),
         "mesh_faces": int(len(faces)),
         "mask_threshold": args.mask_threshold,
+        "smooth_sigma": args.smooth,
+        "iso_level": args.level,
         "conservative": not args.center_test,
         "dilation_px": None if args.center_test else span,
         "views": wanted,
