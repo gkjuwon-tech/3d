@@ -22,8 +22,10 @@ def bbox_of_subject(im, bg_tol=18):
 
 def main():
     d = sys.argv[1] if len(sys.argv) > 1 else "refs/cinder_basilisk"
-    found = [(n, os.path.join(d, n + ".png")) for n in ORDER
-             if os.path.exists(os.path.join(d, n + ".png"))]
+    # rendered view sets keep the beauty pass in rgb/; generated ones are flat
+    src = os.path.join(d, "rgb") if os.path.isdir(os.path.join(d, "rgb")) else d
+    found = [(n, os.path.join(src, n + ".png")) for n in ORDER
+             if os.path.exists(os.path.join(src, n + ".png"))]
     if not found:
         sys.exit(f"no views found in {d}")
 

@@ -100,6 +100,54 @@ Retries: 429/500/503 back off at 2s, 4s, 8s, 16s.
 The API key is read from `GEMINI_API_KEY` only. `.env`, `*.key` and `secrets/`
 are gitignored — no key is ever committed.
 
+## Ground truth: `tools/render_orthoviews.py`
+
+The fusion stage is gated on reconstructing a *known* mesh, so the repo carries
+its own renderer rather than relying on generated images to debug geometry
+code. It takes any mesh and emits six axis-aligned orthographic views sharing
+one camera scale and one centered object, so the frames are aligned by
+construction:
+
+```
+refs/<name>/
+  rgb/<view>.png        flat-lit clay render on a #808080 plate
+  mask/<view>.png       exact silhouette
+  depth/<view>.exr      orthographic depth, float32, normalized object units
+  normal/<view>.exr     world-space normals, float32
+  preview/              viewable depth + camera-space normal maps
+  cameras.json          camera basis, ortho scale, normalization record
+```
+
+Lighting is a uniform white environment dome — even from every direction, no
+cast shadows, and Cycles' global illumination supplies the crevice darkening
+that makes form readable. Bounce count is deliberately low, because light
+bouncing back out of crevices is what flattens a clay render.
+
+```bash
+assets/blender/blender -b -P tools/render_orthoviews.py -- \
+    --mesh assets/lucy_le.ply --out refs/lucy_gt \
+    --res 2048 --samples 128 --yaw 180
+
+assets/blender/blender -b -P tools/inspect_gt.py -- --dir refs/lucy_gt
+```
+
+`inspect_gt.py` is the actual test: it measures each view's silhouette extents
+and checks that the shared axes agree across views (front/back/top/bottom must
+report one width, and so on), that depth stays inside the normalized bounding
+box, and that normals are unit length. A view set that fails this is not worth
+feeding to a reconstruction.
+
+### The test subject
+
+Stanford's **Lucy** — 14,027,872 vertices / 28,055,742 triangles, a full-body
+winged figure. Limbs, wings, drapery folds and a raised arm give the deep
+self-occlusion and concavity that a silhouette-based method is worst at, which
+is the point. The distributed PLY is big-endian, which Blender 4.x will not
+read, so `tools/ply_be2le.py` converts it and reports the bounding box.
+
+Lucy is **not** bilaterally symmetric, so the symmetry constraint in the plan
+is an option rather than a premise.
+
 ## Mirroring the left side
 
 The creature is perfectly bilaterally symmetric, so the left side view is the

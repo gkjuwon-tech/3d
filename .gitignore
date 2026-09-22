@@ -12,3 +12,6 @@ __pycache__/
 # blender / 3d working files
 *.blend1
 *.blend2
+
+# large downloaded assets — fetched by tools/fetch_assets.sh, not committed
+assets/
