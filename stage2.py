@@ -34,10 +34,11 @@ BLENDER = os.path.join(ROOT, "assets", "blender", "blender")
 PY = sys.executable
 
 
-def run(cmd, log, parallel=False):
+def run(cmd, log, parallel=False, env=None):
     print(f"$ {' '.join(cmd)}", flush=True)
     f = open(log, "a")
-    p = subprocess.Popen(cmd, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
+    p = subprocess.Popen(cmd, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT,
+                         env=env)
     if parallel:
         return p
     if p.wait():
@@ -95,12 +96,28 @@ def main():
     todo = [] if fused else [v for v in names if a.force or
                              not os.path.exists(os.path.join(depth, f"{v}_cost.npy"))]
     chunks = [todo[i::a.workers] for i in range(a.workers)]
-    procs = [run([PY, tool("depth_mv.py"), "--views", views,
-                  "--hull-views", os.path.join(hull, "views"),
-                  "--normals-dir", normals, "--out", depth,
-                  "--relief-scale", str(a.relief_scale),
-                  "--only-views", ",".join(c)], log, parallel=True)
-             for c in chunks if c]
+    # on a multi-GPU machine each worker gets a device of its own; sharing
+    # one serialises their solves
+    ngpu = 0
+    if os.environ.get("THREED_GPU") == "1":
+        try:
+            ngpu = len(subprocess.run(["nvidia-smi", "-L"], capture_output=True,
+                                      text=True).stdout.strip().splitlines())
+        except OSError:
+            ngpu = 0
+    procs = []
+    for i, c in enumerate(chunks):
+        if not c:
+            continue
+        env = dict(os.environ)
+        if ngpu > 1:
+            env["CUDA_VISIBLE_DEVICES"] = str(i % ngpu)
+        procs.append(run([PY, tool("depth_mv.py"), "--views", views,
+                          "--hull-views", os.path.join(hull, "views"),
+                          "--normals-dir", normals, "--out", depth,
+                          "--relief-scale", str(a.relief_scale),
+                          "--only-views", ",".join(c)], log, parallel=True,
+                         env=env))
     for p in procs:
         if p.wait():
             sys.exit(f"depth worker failed; see {log}")

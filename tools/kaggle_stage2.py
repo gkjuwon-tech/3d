@@ -114,7 +114,8 @@ for f in os.listdir(data):
     shutil.copy(os.path.join(data, f), dst)
 t0 = time.time()
 r = subprocess.run([sys.executable, W + "/code/stage2.py", "--name", NAME,
-                    "--workers", "%(workers)d", "--stop-after", "fuse"], cwd=W + "/code")
+                    "--workers", "%(workers)d", "--stop-after", "fuse",
+                    "--relief-scale", "%(relief)d"], cwd=W + "/code")
 print("stage2 exit", r.returncode, "minutes", (time.time() - t0) / 60)
 rec = d + "/recon"
 out = W + "/out"
@@ -132,7 +133,7 @@ shutil.rmtree(W + "/code")
 '''
 
 
-def push(name, workers, gpu=False, reuse_data=False):
+def push(name, workers, gpu=False, reuse_data=False, relief=2):
     user = owner()
     code_dir = os.path.join(STAGE, "code")
     shutil.rmtree(code_dir, ignore_errors=True)
@@ -166,7 +167,8 @@ def push(name, workers, gpu=False, reuse_data=False):
     shutil.rmtree(kdir, ignore_errors=True)
     os.makedirs(kdir)
     open(os.path.join(kdir, "run.py"), "w").write(
-        RUNNER % {"name": name, "workers": workers, "gpu": int(gpu)})
+        RUNNER % {"name": name, "workers": workers, "gpu": int(gpu),
+                  "relief": relief})
     json.dump({"id": f"{user}/{kname}",
                "title": kname.replace("-", " "),
                "code_file": "run.py", "language": "python",
@@ -214,10 +216,11 @@ def main():
                     help="a GPU session running the CuPy backend")
     ap.add_argument("--reuse-data", action="store_true",
                     help="keep an already uploaded image dataset")
+    ap.add_argument("--relief-scale", type=int, default=2)
     ap.add_argument("--into", default=None,
                     help="pull into data/<into>/recon instead of data/<name>")
     a = ap.parse_args()
-    {"push": lambda: push(a.name, a.workers, a.gpu, a.reuse_data),
+    {"push": lambda: push(a.name, a.workers, a.gpu, a.reuse_data, a.relief_scale),
      "status": lambda: status(a.name, a.gpu),
      "pull": lambda: pull(a.name, a.gpu, a.into)}[a.cmd]()
 
