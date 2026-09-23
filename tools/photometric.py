@@ -47,6 +47,19 @@ def light_set(n):
     if n == 4:
         return dict(LIGHTS)
     out = {}
+    if n == 12:
+        # the eight below plus four close to the view axis: a light near the
+        # camera reaches nearly everything the camera sees, so the bottom of
+        # a crevice -- under the hair where it falls onto the neck -- keeps
+        # three lights where the outer ring leaves it one or two
+        out = light_set(8)
+        for i in range(4):
+            az = 2 * math.pi * (i + 0.5) / 4
+            el = math.radians(12.0)
+            out[chr(ord("a") + 8 + i)] = (math.sin(el) * math.cos(az),
+                                          math.sin(el) * math.sin(az),
+                                          math.cos(el))
+        return out
     for i in range(n):
         az = 2 * math.pi * i / n
         el = math.radians(25.0 if i % 2 == 0 else 45.0)
@@ -208,6 +221,9 @@ def solve(argv):
                     help="a light reading below this fraction of the pixel's "
                          "brightest counts as shadowed")
     ap.add_argument("--shadow-abs", type=float, default=1e-3)
+    ap.add_argument("--near-axis-deg", type=float, default=20.0,
+                    help="lights closer than this to the view axis are used "
+                         "only where fewer than three others reach a pixel")
     ap.add_argument("--score-against", default=None,
                     help="a view set with normal_npy, to report accuracy")
     args = ap.parse_args(argv)
@@ -259,6 +275,14 @@ def solve(argv):
         Ls_ = Ls
         litm = B > np.maximum(args.shadow_frac * B.max(1, keepdims=True),
                               args.shadow_abs)
+        # Lights close to the view axis reach the bottoms of crevices, but
+        # tell tilt apart poorly (their directions differ by little); so
+        # where three or more of the outer lights reach a pixel, those alone
+        # solve it, and the near-axis ones only fill in where they do not.
+        near = Ls_[:, 2] > math.cos(math.radians(args.near_axis_deg))
+        if near.any() and (~near).sum() >= 3:
+            outer_ok = litm[:, ~near].sum(1) >= 3
+            litm[np.ix_(outer_ok, near)] = False
         g = np.zeros((len(B), 3))
         pats, inv = np.unique(litm, axis=0, return_inverse=True)
         inv = inv.ravel()

@@ -54,6 +54,9 @@ REGIONS = {
     # hair: the head's sides and crown, around the face
     "hair_l": ((-0.028, -0.068, 0.330), 0.028),
     "hair_r": ((0.046, -0.068, 0.320), 0.028),
+    # under the right ear, where the hair falls onto the neck: the hair_r
+    # sphere missed it, and it is where the eight-light mesh still shatters
+    "neck_r": ((0.051, -0.042, 0.278), 0.022),
     "hair_top": ((0.010, -0.058, 0.360), 0.025),
 }
 

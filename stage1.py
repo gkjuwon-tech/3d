@@ -5,7 +5,7 @@
                        bottom, and eight three-quarter views at +-45 degrees):
                        rgb + anti-aliased mask, plus the point-sampled depth and
                        normal passes kept for scoring only
-  data/<name>/photo/   each view lit from eight known directions (Lambertian,
+  data/<name>/photo/   each view lit from twelve known directions (Lambertian,
                        with the shadows a real capture has); photo/lights.json
                        records them
   data/<name>/normals/ camera-space normals solved per pixel from the lights
@@ -55,11 +55,13 @@ def main():
                          "the front camera; both renderers rotate first and "
                          "then re-centre on the bounding box, so any angle "
                          "keeps them aligned")
-    ap.add_argument("--lights", type=int, default=8,
+    ap.add_argument("--lights", type=int, default=12,
                     help="lights per view. Four left 17%% of a view with two "
                          "or fewer unshadowed next to Lucy's raised arm, and "
                          "the old solver returned garbage there; eight leave "
-                         "under 1%%")
+                         "under 1%% but still 30%% of the crevice under her "
+                         "right ear; twelve (four more near the view axis, "
+                         "see photometric.light_set) leave none")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
 
