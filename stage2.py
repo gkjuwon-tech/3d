@@ -57,6 +57,8 @@ def main():
     ap.add_argument("--gt-mesh", default=None, help="score against this mesh")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--quads", type=int, default=40000)
+    ap.add_argument("--stop-after", default=None, choices=["hull", "depth", "fuse"],
+                    help="end early, e.g. on a machine without Blender")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
 
@@ -78,6 +80,8 @@ def main():
                                                    f"{names[-1]}.npy")):
         run([PY, tool("hull_field.py"), "--views", views, "--out", hull], log)
     T["hull"] = time.time() - t0
+    if a.stop_after == "hull":
+        return
 
     # 2. depth, several views at once ------------------------------------------
     t0 = time.time()
@@ -93,6 +97,8 @@ def main():
         if p.wait():
             sys.exit(f"depth worker failed; see {log}")
     T["depth"] = time.time() - t0
+    if a.stop_after == "depth":
+        return
 
     # 3. fuse -----------------------------------------------------------------
     t0 = time.time()
@@ -102,6 +108,9 @@ def main():
              "--views", views, "--depth-dir", depth, "--normals-dir", normals,
              "--hull-cache", os.path.join(hull, "H.npy"), "--out", mesh], log)
     T["fuse"] = time.time() - t0
+    if a.stop_after == "fuse":
+        print("timings: " + "  ".join(f"{k} {v/60:.1f}min" for k, v in T.items()))
+        return
 
     # 4. retopo ---------------------------------------------------------------
     t0 = time.time()
@@ -126,15 +135,17 @@ def main():
             subprocess.run([PY, tool("eval_surface.py"), "--gt-mesh", a.gt_mesh,
                             "--views", views, "--cache",
                             os.path.join(d, "gt_samples.npz"),
-                            "--regions", "lucy" if a.name == "lucy" else "none",
+                            "--regions", "lucy" if a.name.startswith("lucy") else "none",
                             "--recon", os.path.join(hull, "hull.ply"), mesh + ".ply"],
                            cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
             f.flush()
-            subprocess.run([PY, tool("containment.py"), "--field",
-                            mesh + "_field.npy", "--occ", os.path.join(hull, "grid.npz"),
-                            "--gt-mesh", a.gt_mesh, "--views", views, "--cache",
-                            os.path.join(d, "gt_samples.npz")],
-                           cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
+            if os.path.exists(mesh + "_field.npy"):   # not fetched from Kaggle
+                subprocess.run([PY, tool("containment.py"), "--field",
+                                mesh + "_field.npy", "--occ",
+                                os.path.join(hull, "grid.npz"),
+                                "--gt-mesh", a.gt_mesh, "--views", views,
+                                "--cache", os.path.join(d, "gt_samples.npz")],
+                               cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
         for tag, target in (("gt", a.gt_mesh), ("hull", os.path.join(hull, "hull.ply")),
                             ("recon", mesh + ".ply")):
             out = os.path.join(rec, "show", tag)
