@@ -128,7 +128,11 @@ import numpy as np
 for f in os.listdir(rec + "/depth"):
     if f.endswith(".npy") and "_" in f:
         a = np.load(os.path.join(rec, "depth", f))
-        np.save(os.path.join(out, "depth__" + f), a.astype(np.float16) if "_cost" not in f else a)
+        # depth itself must stay float32: values sit near 2.0, where float16's
+        # spacing is 2^-9, about two voxels, and a re-fusion of float16 depth
+        # comes out terraced (normal median 13.8 deg against 7.2)
+        keep32 = not (f.endswith("_anchordist.npy") or f.endswith("_cost.npy"))
+        np.save(os.path.join(out, "depth__" + f), a.astype(np.float32 if keep32 else np.float16))
 shutil.rmtree(W + "/code")
 '''
 
@@ -200,10 +204,7 @@ def pull(name, gpu=False, into=None):
             continue
         dst = os.path.join(rec, *base.split("__"))
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        if base.startswith("depth__") and base.endswith(".npy") and "_cost" not in base:
-            np.save(dst, np.load(f).astype(np.float32))
-        else:
-            shutil.copy(f, dst)
+        shutil.copy(f, dst)
     print("pulled into", rec)
 
 
