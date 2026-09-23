@@ -283,7 +283,7 @@ def robust_fuse(X, per_view, meta, res, h, tau, inlier):
         Dc = xp.where(d2 > 1e-6, (Wd * inl * S).sum(0) / xp.maximum(d2, 1e-12),
                       med)
         D[j0:j1] = cpu(xp.where(tot > 1e-6, Dc, -tau))
-        sup[j0:j1] = cpu((inl & (A > 0)).sum(0).astype(xp.uint8))
+        sup[j0:j1] = cpu(xp.minimum((inl * A).sum(0), 255).astype(xp.uint8))
     return D, sup
 
 
@@ -356,6 +356,9 @@ def main():
                          "largest are dropped")
     ap.add_argument("--no-jump-nearest", dest="jump_nearest", action="store_false",
                     help="interpolate depth bilinearly even across a jump")
+    ap.add_argument("--verify-cost", type=float, default=0.014,
+                    help="final normal cost at or under which a view's depth "
+                         "counts as verified for --support-out (weight 2); 0 off")
     ap.add_argument("--fcost-c0", type=float, default=0.012,
                     help="cross-view normal cost (depth_mv <view>_fcost.npy) up "
                          "to which a view keeps full weight")
@@ -498,8 +501,18 @@ def main():
             if args.fusion == "robust":
                 ad = np.load(dist_p) if os.path.exists(dist_p) else \
                     np.zeros_like(d)
-                anc = xp.asarray((np.nan_to_num(ad, nan=1e9)
-                                  <= args.support_px).astype(np.uint8))
+                anc = (np.nan_to_num(ad, nan=1e9) <= args.support_px).astype(np.uint8)
+                if args.verify_cost > 0 and os.path.exists(fcp):
+                    # a depth the other views' normals confirm (low final
+                    # cost) is cross-view evidence on its own: it counts as
+                    # two, so one verified view can seed a consensus anchor.
+                    # Under Lucy's right ear the one view that saw a patch
+                    # right (error -0.3 voxels, cost 0.0137) could not pass
+                    # min-support 2 alone, so the front view -- 4 voxels too
+                    # deep there -- was never corrected and dug a pit.
+                    fcv = np.load(fcp).astype(np.float32)
+                    anc = anc + 2 * (np.nan_to_num(fcv, nan=1.0) <= args.verify_cost)
+                anc = xp.asarray(anc.astype(np.uint8))
                 span = None
                 if args.jump_nearest:
                     q = np.stack([dfill[:-1, :-1], dfill[1:, :-1],
