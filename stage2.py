@@ -73,11 +73,15 @@ def main():
     names = list(meta["views"])
     T = {}
     t_all = time.time()
+    # a fused mesh fetched from elsewhere (tools/kaggle_stage2.py pull) means
+    # hull, depth and fusion are done, even though their bulky intermediates
+    # were never copied here
+    fused = os.path.exists(os.path.join(rec, "mesh.ply")) and not a.force
 
     # 1. hull -----------------------------------------------------------------
     t0 = time.time()
-    if a.force or not os.path.exists(os.path.join(hull, "views", "depth_npy",
-                                                   f"{names[-1]}.npy")):
+    if not fused and (a.force or not os.path.exists(
+            os.path.join(hull, "views", "depth_npy", f"{names[-1]}.npy"))):
         run([PY, tool("hull_field.py"), "--views", views, "--out", hull], log)
     T["hull"] = time.time() - t0
     if a.stop_after == "hull":
@@ -85,8 +89,8 @@ def main():
 
     # 2. depth, several views at once ------------------------------------------
     t0 = time.time()
-    todo = [v for v in names if a.force or
-            not os.path.exists(os.path.join(depth, f"{v}_cost.npy"))]
+    todo = [] if fused else [v for v in names if a.force or
+                             not os.path.exists(os.path.join(depth, f"{v}_cost.npy"))]
     chunks = [todo[i::a.workers] for i in range(a.workers)]
     procs = [run([PY, tool("depth_mv.py"), "--views", views,
                   "--hull-views", os.path.join(hull, "views"),
