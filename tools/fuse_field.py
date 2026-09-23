@@ -61,16 +61,23 @@ def project(meta, view, X, res):
     return row, col, w
 
 
-def silhouette_sdf(mask, px):
-    """Signed distance to the silhouette outline in world units, >0 outside.
+def silhouette_sdf(mask, px, up=4, level=0.5):
+    """Signed distance to the silhouette outline in world units, >0 outside,
+    sampled on a grid `up` times finer than the image.
 
-    Pixels count as inside at any coverage, which keeps the zero set on the
-    outside edge of the anti-aliased boundary: the hull stays an outer bound.
+    The outline is the `level` contour of the anti-aliased coverage, found on
+    the finer grid. Thresholding at pixel resolution instead leaves the outline
+    a staircase of whole pixels, and a cone extruded from a staircase is a
+    stack of ridges: every near-vertical silhouette edge becomes horizontal
+    terraces across the body, and the diagonal views' terraces cross into the
+    concentric squares that were on the chest. That was never a voxel
+    artefact; the continuous field reproduced it exactly until this changed.
     """
-    inside = mask > 0
+    fine = ndimage.zoom(mask, up, order=1, grid_mode=True, mode="nearest")
+    inside = fine >= level
     d_out = ndimage.distance_transform_edt(~inside)
     d_in = ndimage.distance_transform_edt(inside)
-    return ((d_out - d_in) * px).astype(np.float32)
+    return ((d_out - d_in) * (px / up)).astype(np.float32)
 
 
 def sample(img, row, col, order=1):
@@ -91,6 +98,11 @@ def main():
                     help="pixels from the nearest anchor at which a depth "
                          "sample's weight has fallen to 1/e")
     ap.add_argument("--conf-floor", type=float, default=0.02)
+    ap.add_argument("--hull-cache", default=None,
+                    help="npy to load the hull field from, or save it to")
+    ap.add_argument("--sil-up", type=int, default=4)
+    ap.add_argument("--sil-level", type=float, default=0.5,
+                    help="coverage level taken as the silhouette outline")
     ap.add_argument("--hull-offset", type=float, default=0.0,
                     help="voxels added outward to H")
     ap.add_argument("--smooth", type=float, default=0.0,
@@ -109,23 +121,34 @@ def main():
     t0 = time.time()
 
     # --- H: exact hull distance, max over views --------------------------------
-    H = np.full(dims, -np.inf, dtype=np.float32)
     cx = (lo[0] + (np.arange(dims[0]) + 0.5) * h).astype(np.float32)
     cy = (lo[1] + (np.arange(dims[1]) + 0.5) * h).astype(np.float32)
     cz = (lo[2] + (np.arange(dims[2]) + 0.5) * h).astype(np.float32)
-    slab = 16
-    for v in views:
-        mask = np.asarray(Image.open(os.path.join(args.views, "mask", f"{v}.png"))
-                          .convert("L"), dtype=np.float32) / 255.0
-        sd = silhouette_sdf(mask, px)
-        for i0 in range(0, dims[0], slab):
-            i1 = min(i0 + slab, dims[0])
-            X = np.stack(np.meshgrid(cx[i0:i1], cy, cz, indexing="ij"),
-                         -1).reshape(-1, 3)
-            row, col, _ = project(meta, v, X, res)
-            H[i0:i1] = np.maximum(H[i0:i1], sample(sd, row, col)
-                                  .reshape(i1 - i0, dims[1], dims[2]))
-    H /= h                                   # voxel units
+    if args.hull_cache and os.path.exists(args.hull_cache):
+        H = np.load(args.hull_cache).astype(np.float32)
+    else:
+        H = np.full(dims, -np.inf, dtype=np.float32)
+        up = args.sil_up
+        slab = 16
+        for v in views:
+            mask = np.asarray(Image.open(os.path.join(args.views, "mask",
+                                                      f"{v}.png"))
+                              .convert("L"), dtype=np.float32) / 255.0
+            sd = silhouette_sdf(mask, px, up, args.sil_level)
+            for i0 in range(0, dims[0], slab):
+                i1 = min(i0 + slab, dims[0])
+                X = np.stack(np.meshgrid(cx[i0:i1], cy, cz, indexing="ij"),
+                             -1).reshape(-1, 3)
+                row, col, _ = project(meta, v, X, res)
+                # coarse pixel coordinate c sits at (c + 0.5) up - 0.5 finely
+                H[i0:i1] = np.maximum(
+                    H[i0:i1], sample(sd, (row + 0.5) * up - 0.5,
+                                     (col + 0.5) * up - 0.5)
+                    .reshape(i1 - i0, dims[1], dims[2]))
+            del sd
+        H /= h                               # voxel units
+        if args.hull_cache:
+            np.save(args.hull_cache, H.astype(np.float16))
     H -= args.hull_offset
     print(f"hull field: {time.time()-t0:.0f}s, inside {int((H < 0).sum()):,} "
           f"voxels", flush=True)
