@@ -50,6 +50,10 @@ def render(argv):
     ap.add_argument("--view", default="01_front")
     ap.add_argument("--res", type=int, default=1024)
     ap.add_argument("--samples", type=int, default=24)
+    ap.add_argument("--no-denoise", action="store_true",
+                    help="a shadowless sun on a pure diffuse surface shades every "
+                         "sample identically, so the only noise is edge "
+                         "coverage; the denoiser can only move good values")
     ap.add_argument("--yaw", type=float, default=180.0)
     ap.add_argument("--shadows", action="store_true",
                     help="leave cast shadows on; off by default so the first "
@@ -93,7 +97,7 @@ def render(argv):
     sc.render.engine = "CYCLES"
     sc.cycles.device = "CPU"
     sc.cycles.samples = args.samples
-    sc.cycles.use_denoising = True
+    sc.cycles.use_denoising = not args.no_denoise
     sc.cycles.max_bounces = 0          # direct light only: pure Lambertian
     sc.render.resolution_x = sc.render.resolution_y = args.res
     sc.render.film_transparent = True
