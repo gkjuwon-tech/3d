@@ -209,9 +209,38 @@ def outer_shell(F, tau, keep_frac=0.01):
     return F, n_drop, int(sealed.sum()), int(fill.sum())
 
 
-def largest_pieces(verts, faces, keep_frac):
-    """Mesh pieces with at least keep_frac of the largest's faces; the rest
-    are the one-voxel diamonds marching cubes leaves at ambiguous corners."""
+def hollow_field(F, wall, min_cavity=1000):
+    """The same solid with its inside removed: a wall `wall` voxels thick
+    under the outer surface, which stays exactly as it was.
+
+    The cavity is where the distance to the outside exceeds `wall`; parts
+    thinner than twice that (fingers, locks of hair, wing tips) get none and
+    stay solid, and cavities under `min_cavity` voxels are dropped -- a sealed
+    speck of air is no use to anyone printing it. Returns the field and
+    (cavities kept, solid voxels before, after)."""
+    occ = F < 0
+    D = ndimage.distance_transform_edt(occ).astype(np.float32)
+    D = ndimage.gaussian_filter(D, 1.0)          # a smooth inner wall
+    # +1: the smoothing of D rounds the inner wall; measured on Lucy, the
+    # wall came out up to one voxel under what was asked, and a requested
+    # thickness has to be a minimum
+    cav = D > wall + 1.0
+    lab, n = ndimage.label(cav)
+    size = np.bincount(lab.ravel())
+    size[0] = 0
+    keep = size >= min_cavity
+    keep[0] = False
+    cav = keep[lab]
+    del lab
+    near = ndimage.binary_dilation(cav, iterations=3)
+    H = np.where(near, np.maximum(F, D - wall - 1.0), F).astype(np.float32)
+    return H, int(keep.sum()), int(occ.sum()), int((H < 0).sum())
+
+
+def largest_pieces(verts, faces, keep_frac, min_faces=0):
+    """Mesh pieces with at least keep_frac of the largest's faces (and at
+    least min_faces); the rest are the one-voxel diamonds marching cubes
+    leaves at ambiguous corners."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
     e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
@@ -219,7 +248,7 @@ def largest_pieces(verts, faces, keep_frac):
                                              shape=(len(verts),) * 2), directed=False)
     fl = lab[faces[:, 0]]
     size = np.bincount(fl)
-    keep = (size >= keep_frac * size.max())[fl]
+    keep = ((size >= keep_frac * size.max()) & (size >= min_faces))[fl]
     faces = faces[keep]
     used = np.unique(faces)
     remap = -np.ones(len(verts), np.int64)
@@ -351,6 +380,12 @@ def main():
     ap.add_argument("--shell", action="store_true",
                     help="outer_shell() before meshing: one closed outer "
                          "surface, no loose pieces or sealed pockets")
+    ap.add_argument("--hollow", type=float, default=0.0,
+                    help="also write <out>_hollow.ply: the same outer surface "
+                         "with a wall this many voxels thick and the inside "
+                         "empty (hollow_field); 0 = solid only")
+    ap.add_argument("--hollow-min", type=int, default=1000,
+                    help="cavities smaller than this many voxels stay solid")
     ap.add_argument("--shell-keep", type=float, default=0.01,
                     help="solid pieces smaller than this fraction of the "
                          "largest are dropped")
@@ -585,13 +620,29 @@ def main():
     verts, faces, _, _ = measure.marching_cubes(Fp, level=0.0,
                                                 spacing=(h, h, h))
     verts += lo + 0.5 * h - h      # voxel centres, undo the pad
-    faces = faces[:, ::-1]         # outward-facing for a field positive outside
+    # marching_cubes on a field positive outside already winds faces
+    # outward. They used to be reversed here -- every mesh came out inside
+    # out (signed volume negative where the scans' is positive), invisible in
+    # two-sided renders, but a slicer reads it as a solid turned inside out.
     if args.shell:
         verts, faces = largest_pieces(verts, faces, args.shell_keep)
     write_ply(args.out + ".ply", verts.astype(np.float32),
               faces.astype(np.int32))
     print(f"wrote {args.out}.ply  {len(faces):,} faces  inside "
           f"{int(occ.sum()):,} voxels  {time.time()-t0:.0f}s")
+    if args.hollow > 0:
+        del Fp, verts, faces
+        Hf, nc, v0, v1 = hollow_field(F, args.hollow, args.hollow_min)
+        Hp = np.pad(Hf, 1, constant_values=float(tau if args.depth_dir else 10))
+        del Hf
+        hv, hf, _, _ = measure.marching_cubes(Hp, level=0.0, spacing=(h, h, h))
+        hv += lo + 0.5 * h - h
+        hv, hf = largest_pieces(hv, hf, 0.0, min_faces=100)
+        write_ply(args.out + "_hollow.ply", hv.astype(np.float32),
+                  hf.astype(np.int32))
+        print(f"wrote {args.out}_hollow.ply  wall {args.hollow:g} voxels, "
+              f"{nc} cavities, material {v1:,} of {v0:,} voxels "
+              f"({100 * v1 / max(v0, 1):.1f}%)", flush=True)
 
 
 if __name__ == "__main__":

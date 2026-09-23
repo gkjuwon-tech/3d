@@ -87,6 +87,12 @@ def main():
                          "(under Lucy's ear: F@1 97.3 -> 97.8) and lowers the "
                          "normal error everywhere (median 3.62 -> 3.47 deg) "
                          "for -0.04 F@1 overall; 0 keeps the raw field")
+    ap.add_argument("--hollow", type=float, default=0.0,
+                    help="also write recon/mesh_hollow.ply: the same outer "
+                         "surface, a wall this many voxels thick (1 voxel = "
+                         "1/1024 of the model's largest extent; 8 on a 20 cm "
+                         "print is ~1.6 mm) and the inside empty. Parts "
+                         "thinner than twice the wall stay solid")
     ap.add_argument("--stop-after", default=None, choices=["hull", "depth", "fuse"],
                     help="end early, e.g. on a machine without Blender")
     ap.add_argument("--passes", type=int, default=2,
@@ -179,7 +185,8 @@ def main():
     t0 = time.time()
     mesh = os.path.join(rec, "mesh")
     if a.passes == 1 and not a.joint:
-        fuse(depth, mesh, ["--shell", "--smooth", str(a.smooth)])
+        fuse(depth, mesh, ["--shell", "--smooth", str(a.smooth),
+                           "--hollow", str(a.hollow)])
     elif not fused:
         grid = os.path.join(hull, "grid.npz")
         prev = depth
@@ -220,7 +227,8 @@ def main():
             T[f"pass{k}"] = time.time() - t0
             t0 = time.time()
             prev = dk
-        fuse(prev, mesh, clamp + ["--shell", "--smooth", str(a.smooth)])
+        fuse(prev, mesh, clamp + ["--shell", "--smooth", str(a.smooth),
+                                  "--hollow", str(a.hollow)])
     T["fuse"] = time.time() - t0
     if a.stop_after == "fuse":
         print("timings: " + "  ".join(f"{k} {v/60:.1f}min" for k, v in T.items()))

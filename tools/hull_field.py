@@ -239,7 +239,7 @@ def main():
         np.pad(H, 1, constant_values=10.0), level=0.0, spacing=(h, h, h))
     verts += lo - 0.5 * h
     write_ply(os.path.join(args.out, "hull.ply"), verts.astype(np.float32),
-              faces[:, ::-1].astype(np.int32))
+              faces.astype(np.int32))   # already outward (see fuse_field)
     print(f"hull.ply {len(faces):,} faces: {time.time()-t00:.0f}s", flush=True)
 
     vdir = os.path.join(args.out, "views")
