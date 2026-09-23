@@ -31,6 +31,7 @@ import sys
 import time
 
 import numpy as np
+from scipy import ndimage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import depth_contact as dcx  # noqa: E402
@@ -103,10 +104,21 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
                                  args.irls, args.sigma)
     t1 = time.time()
 
-    # 2. anchors by normal-field sweep, centred on a median placement
-    relief = relief + np.nanmedian((hull - relief)[hit])
+    # 2. anchors by normal-field sweep. The sweep has to be centred close to
+    # the truth everywhere, and one constant for the whole image is not: from
+    # the top view the head and the plinth are hundreds of voxels apart in
+    # depth, so with a global centre the true offset of whole regions fell
+    # outside the swept range and they locked onto the least-wrong match
+    # instead -- entire pieces placed 28 voxels too deep. The centre is now
+    # local: the relief is shifted by a smoothed gap to the hull, so each
+    # region starts on its own stretch of hull and the sweep only has to find
+    # how far behind it the surface sits.
+    gap = np.where(hit, hull - relief, 0.0)
+    wts = ndimage.gaussian_filter(hit.astype(np.float64), args.center_sigma)
+    local = ndimage.gaussian_filter(gap, args.center_sigma) / np.maximum(wts, 1e-9)
+    relief = relief + local
     nA = ns.world_normals(views_dir, normals_dir, view, meta)
-    offsets = (np.arange(-args.range, args.range + 1e-9, args.step)
+    offsets = (np.arange(-args.range_front, args.range_back + 1e-9, args.step)
                * VOX).astype(np.float32)
     srcs = [s for s in nB if s != view]
     cost = ns.sweep(meta, view, srcs, nA, nB, hitB, relief, hull, hit,
@@ -135,7 +147,6 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
     out = np.where(hit, np.maximum(out, hull), np.nan)
 
     # confidence: distance (in pixels) to the nearest surviving anchor
-    from scipy import ndimage
     live = np.zeros(hit.shape, bool)
     ar, ac = np.nonzero(anc)          # same row-major order as idx[anc]
     kept = wa > 0.5 * anc_w
@@ -158,7 +169,13 @@ def main():
     ap.add_argument("--nz-floor", type=float, default=0.15)
     ap.add_argument("--irls", type=int, default=10)
     ap.add_argument("--sigma", type=float, default=2e-4)
-    ap.add_argument("--range", type=float, default=40.0)
+    ap.add_argument("--range-front", type=float, default=20.0,
+                    help="voxels swept toward the camera from the local centre")
+    ap.add_argument("--range-back", type=float, default=60.0,
+                    help="voxels swept away from it; the truth is behind the "
+                         "hull, so the range is lopsided on purpose")
+    ap.add_argument("--center-sigma", type=float, default=24.0,
+                    help="pixels; smoothing of the gap that centres the sweep")
     ap.add_argument("--step", type=float, default=1.0)
     ap.add_argument("--win", type=int, default=11)
     ap.add_argument("--anchor-cost", type=float, default=0.012)
