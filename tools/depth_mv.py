@@ -61,7 +61,7 @@ def anchored_solve(a, b, grad, w_edge, N, hull_p, px, anc_idx, anc_z, anc_w,
                    iters, sigma, sigma_a, x0):
     """Robust screened integration toward sparse anchors."""
     from scipy import sparse
-    import pyamg
+    from linsolve import spd_solve
     m = len(a)
     r = np.arange(m)
     z = x0
@@ -80,9 +80,7 @@ def anchored_solve(a, b, grad, w_edge, N, hull_p, px, anc_idx, anc_z, anc_w,
         np.add.at(rhs, anc_idx, wa * anc_z)
         AtA = AtA + sparse.diags(D)
         Atb = A.T @ (grad * sw) + rhs
-        ml = pyamg.smoothed_aggregation_solver(AtA, symmetry="symmetric",
-                                               max_coarse=500)
-        z = ml.solve(Atb, x0=z, tol=1e-10, accel="cg", maxiter=400)
+        z = spd_solve(AtA.tocsr(), Atb, x0=z, tol=1e-6)
         if it == iters:
             break
         res_e = (z[b] - z[a]) - grad

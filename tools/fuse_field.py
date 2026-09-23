@@ -41,6 +41,9 @@ from scipy import ndimage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from visual_hull import write_ply  # noqa: E402
+from xp import GPU, cpu, ndi, xp  # noqa: E402
+
+CHUNK = 40_000_000 if GPU else 20_000_000
 
 BG = 1e9
 
@@ -179,15 +182,27 @@ def main():
                              [..., 2]).astype(np.float32)
                 conf = conf * nzv
             conf = np.where(hitv, conf, 0).astype(np.float32)
-            for j0 in range(0, len(X), 20_000_000):
-                j1 = min(j0 + 20_000_000, len(X))
-                row, col, w = project(meta, v, X[j0:j1], res)
-                s = (sample(dfill, row, col) - w) / h      # voxels, >0 empty
-                c = sample(conf, row, col, order=0)
+            # the per-voxel sampling below is the whole cost of fusion, and
+            # runs on the xp backend: the GPU when THREED_GPU=1
+            dg = xp.asarray(dfill.astype(np.float32))
+            cg_ = xp.asarray(conf)
+            right, up_, back, loc = (xp.asarray(q, dtype=xp.float32)
+                                     for q in cam(meta, v))
+            o = meta["ortho_scale"]
+            for j0 in range(0, len(X), CHUNK):
+                j1 = min(j0 + CHUNK, len(X))
+                Xg = xp.asarray(X[j0:j1]) - loc
+                col = (Xg @ right / o + 0.5) * res - 0.5
+                row = (0.5 - Xg @ up_ / o) * res - 0.5
+                w = -(Xg @ back)
+                rc = xp.stack([row, col])
+                s = (ndi.map_coordinates(dg, rc, order=1, mode="nearest") - w) / h
+                c = ndi.map_coordinates(cg_, rc, order=0, mode="nearest")
                 ok = (s > -tau) & (c > 0)
-                wt = np.where(ok, c * np.where(s < 0, 1 + s / tau, 1.0), 0)
-                num[j0:j1] += wt * np.clip(s, -tau, tau)
-                den[j0:j1] += wt
+                wt = xp.where(ok, c * xp.where(s < 0, 1 + s / tau, 1.0), 0)
+                num[j0:j1] += cpu(wt * xp.clip(s, -tau, tau))
+                den[j0:j1] += cpu(wt)
+            del dg, cg_
             print(f"  {v}: {time.time()-t0:.0f}s", flush=True)
         seen = den > 1e-6
         D = np.where(seen, num / np.maximum(den, 1e-12), -tau).astype(np.float32)

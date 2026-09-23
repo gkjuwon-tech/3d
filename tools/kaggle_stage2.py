@@ -81,6 +81,15 @@ RUNNER = r'''
 import os, subprocess, sys, shutil, time
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pyamg", "plyfile"],
                check=True)
+if %(gpu)d:
+    os.environ["THREED_GPU"] = "1"
+    try:
+        import cupy
+        cupy.zeros(1)
+    except Exception:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "cupy-cuda12x"],
+                       check=True)
+    subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv"])
 NAME = "%(name)s"
 def locate(fname):
     for root, _, files in os.walk("/kaggle/input"):
@@ -119,11 +128,11 @@ for f in os.listdir(rec + "/depth"):
     if f.endswith(".npy") and "_" in f:
         a = np.load(os.path.join(rec, "depth", f))
         np.save(os.path.join(out, "depth__" + f), a.astype(np.float16) if "_cost" not in f else a)
-shutil.rmtree(W + "/code/data")
+shutil.rmtree(W + "/code")
 '''
 
 
-def push(name, workers):
+def push(name, workers, gpu=False, reuse_data=False):
     user = owner()
     code_dir = os.path.join(STAGE, "code")
     shutil.rmtree(code_dir, ignore_errors=True)
@@ -133,50 +142,56 @@ def push(name, workers):
         shutil.copy(f, os.path.join(code_dir, "tools__" + os.path.basename(f)))
     upload_dataset(user, CODE_SLUG, "threed stage2 code", code_dir)
 
-    src = os.path.join(ROOT, "data", name)
-    ddir = os.path.join(STAGE, name)
-    shutil.rmtree(ddir, ignore_errors=True)
-    os.makedirs(ddir)
-    shutil.copy(os.path.join(src, "views", "cameras.json"),
-                os.path.join(ddir, "views__cameras.json"))
-    for sub in ("mask", "rgb"):
-        for f in glob.glob(os.path.join(src, "views", sub, "*.png")):
-            shutil.copy(f, os.path.join(ddir, f"views__{sub}__{os.path.basename(f)}"))
-    for f in glob.glob(os.path.join(src, "normals", "*.npy")):
-        np.save(os.path.join(ddir, "normals__" + os.path.basename(f)),
-                np.load(f).astype(np.float16))
     slug = f"threed-{name.replace('_', '-')}-images"
-    upload_dataset(user, slug, f"threed {name} images", ddir)
+    have = subprocess.run(["kaggle", "datasets", "status", f"{user}/{slug}"],
+                          capture_output=True, text=True).returncode == 0
+    if not (reuse_data and have):
+        src = os.path.join(ROOT, "data", name)
+        ddir = os.path.join(STAGE, name)
+        shutil.rmtree(ddir, ignore_errors=True)
+        os.makedirs(ddir)
+        shutil.copy(os.path.join(src, "views", "cameras.json"),
+                    os.path.join(ddir, "views__cameras.json"))
+        for sub in ("mask", "rgb"):
+            for f in glob.glob(os.path.join(src, "views", sub, "*.png")):
+                shutil.copy(f, os.path.join(ddir, f"views__{sub}__{os.path.basename(f)}"))
+        for f in glob.glob(os.path.join(src, "normals", "*.npy")):
+            np.save(os.path.join(ddir, "normals__" + os.path.basename(f)),
+                    np.load(f).astype(np.float16))
+        upload_dataset(user, slug, f"threed {name} images", ddir)
+        shutil.rmtree(ddir, ignore_errors=True)
 
-    kdir = os.path.join(STAGE, f"kernel_{name}")
+    kname = f"threed-stage2-{name.replace('_', '-')}" + ("-gpu" if gpu else "")
+    kdir = os.path.join(STAGE, f"kernel_{name}{'_gpu' if gpu else ''}")
     shutil.rmtree(kdir, ignore_errors=True)
     os.makedirs(kdir)
     open(os.path.join(kdir, "run.py"), "w").write(
-        RUNNER % {"name": name, "workers": workers})
-    json.dump({"id": f"{user}/threed-stage2-{name.replace('_', '-')}",
-               "title": f"threed stage2 {name.replace('_', ' ')}",
+        RUNNER % {"name": name, "workers": workers, "gpu": int(gpu)})
+    json.dump({"id": f"{user}/{kname}",
+               "title": kname.replace("-", " "),
                "code_file": "run.py", "language": "python",
                "kernel_type": "script", "is_private": True,
-               "enable_gpu": False, "enable_internet": True,
+               "enable_gpu": bool(gpu), "enable_internet": True,
                "dataset_sources": [f"{user}/{CODE_SLUG}", f"{user}/{slug}"],
                "competition_sources": [], "kernel_sources": []},
               open(os.path.join(kdir, "kernel-metadata.json"), "w"), indent=1)
     sh(["kaggle", "kernels", "push", "-p", kdir])
 
 
-def status(name):
-    user = owner()
-    sh(["kaggle", "kernels", "status",
-        f"{user}/threed-stage2-{name.replace('_', '-')}"], check=False)
+def kernel_id(user, name, gpu):
+    return f"{user}/threed-stage2-{name.replace('_', '-')}" + ("-gpu" if gpu else "")
 
 
-def pull(name):
+def status(name, gpu=False):
+    sh(["kaggle", "kernels", "status", kernel_id(owner(), name, gpu)], check=False)
+
+
+def pull(name, gpu=False, into=None):
     user = owner()
     tmp = os.path.join(STAGE, f"pull_{name}")
     shutil.rmtree(tmp, ignore_errors=True)
-    sh(["kaggle", "kernels", "output",
-        f"{user}/threed-stage2-{name.replace('_', '-')}", "-p", tmp])
-    rec = os.path.join(ROOT, "data", name, "recon")
+    sh(["kaggle", "kernels", "output", kernel_id(user, name, gpu), "-p", tmp])
+    rec = os.path.join(ROOT, "data", into or name, "recon")
     for f in glob.glob(os.path.join(tmp, "**", "*"), recursive=True):
         base = os.path.basename(f)
         if not os.path.isfile(f):
@@ -195,9 +210,16 @@ def main():
     ap.add_argument("cmd", choices=["push", "status", "pull"])
     ap.add_argument("name")
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--gpu", action="store_true",
+                    help="a GPU session running the CuPy backend")
+    ap.add_argument("--reuse-data", action="store_true",
+                    help="keep an already uploaded image dataset")
+    ap.add_argument("--into", default=None,
+                    help="pull into data/<into>/recon instead of data/<name>")
     a = ap.parse_args()
-    {"push": lambda: push(a.name, a.workers), "status": lambda: status(a.name),
-     "pull": lambda: pull(a.name)}[a.cmd]()
+    {"push": lambda: push(a.name, a.workers, a.gpu, a.reuse_data),
+     "status": lambda: status(a.name, a.gpu),
+     "pull": lambda: pull(a.name, a.gpu, a.into)}[a.cmd]()
 
 
 if __name__ == "__main__":

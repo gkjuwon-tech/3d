@@ -43,7 +43,7 @@ import sys
 import time
 
 import numpy as np
-import pyamg
+from linsolve import spd_solve  # noqa: E402
 from PIL import Image
 from scipy import sparse
 from scipy.sparse.csgraph import connected_components
@@ -110,7 +110,7 @@ def build_edges(n, hit, keep, px, nz_floor):
     return np.concatenate(A_), np.concatenate(B_), np.concatenate(G_), idx
 
 
-def solve(a, b, grad, w, N, prior, px, reg=1e-9, x0=None, tol=1e-10):
+def solve(a, b, grad, w, N, prior, px, reg=1e-9, x0=None, tol=1e-6):
     """Weighted least squares  sum w (z_b - z_a - grad)^2 / px^2, screened
     very weakly toward a plausible depth so every piece is well defined."""
     m = len(a)
@@ -123,9 +123,7 @@ def solve(a, b, grad, w, N, prior, px, reg=1e-9, x0=None, tol=1e-10):
     lam = reg * AtA.diagonal().mean()
     AtA = AtA + lam * sparse.identity(N, format="csr")
     Atb = A.T @ (grad * sw) + lam * prior
-    ml = pyamg.smoothed_aggregation_solver(AtA, symmetry="symmetric",
-                                           max_coarse=500)
-    return ml.solve(Atb, x0=x0, tol=tol, accel="cg", maxiter=400)
+    return spd_solve(AtA.tocsr(), Atb, x0=x0, tol=tol)
 
 
 def integrate(hull, n, hit, keep, px, nz_floor, irls=0, sigma=2e-4,
