@@ -14,6 +14,14 @@ the first zero crossing, and keep it only where the fusion's support there
 fuse_field.py --support-out) is at least --min-support. Those depths go back
 to depth_mv.py --consensus as extra anchors for a second solve.
 
+And only where this view agrees: the fused surface's normal there (the field's
+gradient) must match this view's own photometric normal to --max-angle. The
+normals are right to a degree; a depth is not. Without this check the passes
+fed on themselves: a small pocket that pass 2 carved inside Lucy's head was
+rendered back into the views as "agreed surface", adopted, and carved deeper,
+until pass 3's face held a cavity 3-20 voxels under the skin (F@1 in the
+face 93 -> 64) though it looked perfect from outside.
+
 Run:
   python3 tools/consensus.py --field recon/fuse1_field.npy \
       --support recon/fuse1_support.npy --grid recon/fuse1_occ.npz \
@@ -29,6 +37,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from xp import cpu, ndi, xp  # noqa: E402
+import normal_stereo as ns  # noqa: E402
 
 BG = 1e9
 
@@ -43,6 +52,10 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--min-support", type=int, default=2)
     ap.add_argument("--only-views", default=None)
+    ap.add_argument("--normals-dir", default=None,
+                    help="photometric normals; with it, a consensus pixel is "
+                         "kept only where the fused surface's normal agrees")
+    ap.add_argument("--max-angle", type=float, default=15.0)
     ap.add_argument("--max-depth", type=float, default=160.0,
                     help="voxels behind the hull to search for the surface")
     args = ap.parse_args()
@@ -105,7 +118,20 @@ def main():
             keep = ~cross & (t_new < t_end[act])
             act = act[keep]
             f_prev = f_new[keep]
-        ok = cpu(xp.isfinite(found) & (sup >= args.min_support))
+        okx = xp.isfinite(found) & (sup >= args.min_support)
+        n_rej = 0
+        if args.normals_dir:
+            a = xp.nonzero(okx)[0]
+            Ps = base[a] - found[a][:, None] * back[None]
+            g = xp.stack([sample(Ps + h * e[None], F, 1) - sample(Ps - h * e[None], F, 1)
+                          for e in xp.eye(3, dtype=xp.float32)], -1)
+            g = g / xp.maximum(xp.linalg.norm(g, axis=1, keepdims=True), 1e-9)
+            nw = xp.asarray(ns.world_normals(args.views, args.normals_dir, v, meta)
+                            [r, c].astype(np.float32))[a]
+            agree = (g * nw).sum(1) > np.cos(np.radians(args.max_angle))
+            n_rej = int((~agree).sum())
+            okx[a[~agree]] = False
+        ok = cpu(okx)
         depth = np.full(hit.shape, np.nan, dtype=np.float32)
         depth[r[ok], c[ok]] = cpu(found)[ok]
         np.save(os.path.join(args.out, f"{v}.npy"), depth)
@@ -117,7 +143,8 @@ def main():
             e = (depth - gt)[mm] / h
             note = (f"  vs GT: |e|<1.5 {100*(np.abs(e) < 1.5).mean():5.1f}%  "
                     f"deep>1.5 {100*(e > 1.5).mean():4.1f}%")
-        print(f"  {v:<13} consensus {int(ok.sum()):>9,} px "
+        print(f"  {v:<13} consensus {int(ok.sum()):>9,} px (normal check "
+              f"dropped {n_rej:,}) "
               f"({100*ok.sum()/max(n, 1):4.1f}% of silhouette){note}  "
               f"{time.time()-t0:.0f}s", flush=True)
 

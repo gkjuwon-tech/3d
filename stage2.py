@@ -202,7 +202,7 @@ def main():
                 run([PY, tool("consensus.py"), "--field", fk + "_field.npy",
                      "--support", fk + "_support.npy", "--grid", grid,
                      "--views", views, "--hull-views", os.path.join(hull, "views"),
-                     "--out", cons], log)
+                     "--normals-dir", normals, "--out", cons], log)
             dk = os.path.join(rec, f"depth{k}")
             depth_pass(dk, ["--pass1", depth, "--consensus", cons])
             for f in (fk + "_field.npy", fk + "_support.npy"):

@@ -240,6 +240,11 @@ def main():
                          "with distance d to its own depth discontinuities "
                          "(jumps over --edge-vox). 0 disables")
     ap.add_argument("--edge-vox", type=float, default=4.0)
+    ap.add_argument("--clamp-dir", default=None,
+                    help="consensus depths (consensus.py): a view may not claim "
+                         "to see further than this verified surface along its "
+                         "ray plus --clamp-margin voxels")
+    ap.add_argument("--clamp-margin", type=float, default=2.0)
     ap.add_argument("--no-mesh", action="store_true",
                     help="write the field (and support) only")
     ap.add_argument("--band", type=float, default=2.0,
@@ -305,6 +310,14 @@ def main():
         per_view = []
         for v in views:
             d = np.load(os.path.join(args.depth_dir, f"{v}.npy"))
+            if args.clamp_dir:
+                # Inside a solid, the views that got its skin right are past
+                # their truncation band and abstain; a view that put its
+                # depth too deep is then the only voice there, and the
+                # median of one hollows the interior out behind an intact
+                # skin. Its line of sight is blocked at the verified surface.
+                cl = np.load(os.path.join(args.clamp_dir, f"{v}.npy"))
+                d = np.where(np.isfinite(cl), np.minimum(d, cl + args.clamp_margin * h), d)
             hitv = np.isfinite(d)
             idx = ndimage.distance_transform_edt(~hitv, return_distances=False,
                                                  return_indices=True)
