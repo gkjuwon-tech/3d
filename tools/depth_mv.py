@@ -90,6 +90,50 @@ def anchored_solve(a, b, grad, w_edge, N, hull_p, px, anc_idx, anc_z, anc_w,
     return z, we, wa
 
 
+def place_orphans(z, a, b, we, N, hull_p, live_idx, cut_w, q):
+    """Put pieces no anchor reaches against the hull instead of leaving them
+    glued to their neighbours.
+
+    Across a depth jump the robust weights fall to ~1e-5, not to zero, and a
+    few hundred such edges along a finger's outline outweigh the whole
+    finger's pull toward the hull by a factor of hundreds: an unanchored
+    finger, knob or lock of hair ends up near the depth of whatever lies
+    behind it -- 132 voxels too deep on Lucy's outstretched hand. The view
+    then declares the finger's own volume empty, and where views disagree
+    about it the fused surface shatters into fragments.
+
+    So after the solve, edges below cut_w are treated as cut, and every piece
+    with no surviving anchor keeps its relief but is moved toward the camera
+    until it touches the hull -- the q-th percentile of its gap, so one bad
+    pixel cannot set it. Small protrusions are exactly where the other views'
+    silhouettes wrap the hull tightly, so that is close to right, and a piece
+    is only ever moved forward: this can make a surface too shallow, never too
+    deep.
+    """
+    from scipy import sparse
+    from scipy.sparse.csgraph import connected_components
+    live = we >= cut_w
+    adj = sparse.coo_matrix((np.ones(int(live.sum())), (a[live], b[live])),
+                            shape=(N, N))
+    n_lab, lab = connected_components(adj, directed=False)
+    anchored = np.zeros(n_lab, bool)
+    anchored[lab[live_idx]] = True
+    gap = hull_p - z                        # > 0 where z is in front of hull
+    order = np.lexsort((gap, lab))
+    lab_s, gap_s = lab[order], gap[order]
+    starts = np.searchsorted(lab_s, np.arange(n_lab))
+    ends = np.searchsorted(lab_s, np.arange(n_lab), side="right")
+    size = ends - starts
+    k = np.clip(starts + np.floor((size - 1) * q / 100).astype(np.int64),
+                starts, np.maximum(ends - 1, starts))
+    c = np.where(size > 0, gap_s[np.minimum(k, len(gap_s) - 1)], 0.0)
+    shift = np.where(anchored, 0.0, np.minimum(c, 0.0))   # forward only
+    moved = shift[lab] < 0
+    z = z + shift[lab]
+    med = float(np.median(shift[lab][moved])) if moved.any() else 0.0
+    return z, int(((~anchored) & (shift < 0)).sum()), int(moved.sum()), med
+
+
 def coarse_relief(hull, n, rgb, hit, px, args):
     """The relief at 1/k resolution, brought back up.
 
@@ -174,10 +218,24 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
     anc_idx = idx[anc]
     anc_z = z_st[anc]
     anc_w = np.full(len(anc_idx), (1.0 / px ** 2) / args.anchor_len ** 2)
+    if args.anchor_soft > 0:
+        # graded rather than thresholded: a thin feature's window straddles
+        # its outline, so even its right answer scores a middling cost, and a
+        # hard cut at 0.012 left fingers and the torch knob with no anchor at
+        # all -- free to be dragged off by their neighbours
+        anc_w = anc_w * np.exp(-(best[anc] - best[anc].min()) / args.anchor_soft)
     z, we, wa = anchored_solve(a, b, grad, np.ones(len(a)), N, hull[hit], px,
                                anc_idx, anc_z, anc_w, args.irls_final,
                                args.sigma, args.sigma_anchor * VOX,
                                x0=relief[hit])
+    kept = wa > 0.5 * anc_w
+    orphan_note = ""
+    if args.orphans == "contact":
+        z, n_orph, n_px, med_shift = place_orphans(z, a, b, we, N, hull[hit],
+                                                   anc_idx[kept], args.cut_w,
+                                                   args.orphan_q)
+        orphan_note = (f"  orphans {n_orph} pieces / {n_px:,} px, median "
+                       f"shift {med_shift / VOX:+.1f} vox")
     out = np.full(hit.shape, np.nan)
     out[hit] = z
     out = np.where(hit, np.maximum(out, hull), np.nan)
@@ -185,14 +243,13 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
     # confidence: distance (in pixels) to the nearest surviving anchor
     live = np.zeros(hit.shape, bool)
     ar, ac = np.nonzero(anc)          # same row-major order as idx[anc]
-    kept = wa > 0.5 * anc_w
     live[ar[kept], ac[kept]] = True
     dist = ndimage.distance_transform_edt(~live).astype(np.float32)
     dist[~hit] = np.nan
     t3 = time.time()
     return out.astype(np.float32), dist, best.astype(np.float32), \
         z_st.astype(np.float32), (t1 - t0, t2 - t1, t3 - t2), anc.sum(), \
-        int((wa > 0.5 * anc_w).sum())
+        int((wa > 0.5 * anc_w).sum()), orphan_note
 
 
 def main():
@@ -223,11 +280,19 @@ def main():
     ap.add_argument("--coarse", type=float, default=4.0,
                     help="voxels between offsets in the fast sweep's first pass")
     ap.add_argument("--anchor-cost", type=float, default=0.012)
+    ap.add_argument("--anchor-soft", type=float, default=0.0,
+                    help="if > 0, anchor weight falls off as exp(-cost/this)")
     ap.add_argument("--anchor-len", type=float, default=8.0,
                     help="screening length of an anchor, in pixels")
     ap.add_argument("--sigma-anchor", type=float, default=1.5,
                     help="Cauchy scale for anchor residuals, in voxels")
     ap.add_argument("--irls-final", type=int, default=5)
+    ap.add_argument("--orphans", default="contact", choices=["contact", "keep"],
+                    help="contact: pieces with no anchor are moved forward onto "
+                         "the hull instead of hanging off their neighbours")
+    ap.add_argument("--cut-w", type=float, default=0.05,
+                    help="robust edge weight below which an edge separates pieces")
+    ap.add_argument("--orphan-q", type=float, default=99.5)
     ap.add_argument("--only-views", default=None)
     args = ap.parse_args()
 
@@ -240,7 +305,7 @@ def main():
         hb = np.load(os.path.join(args.hull_views, "depth_npy", f"{s}.npy"))
         hitB[s] = hb < BG
     for v in views:
-        z, dist, cost, z_st, tt, n_anc, n_live = process(
+        z, dist, cost, z_st, tt, n_anc, n_live, orphan_note = process(
             args.views, args.hull_views, args.normals_dir, v, meta, args, nB, hitB)
         np.save(os.path.join(args.out, f"{v}.npy"), z)
         np.save(os.path.join(args.out, f"{v}_anchordist.npy"), dist)
@@ -258,7 +323,7 @@ def main():
                     f"w3 {100*(np.abs(e)<3).mean():4.1f}%  behind>1 {100*(e>1).mean():4.1f}% "
                     f">3 {100*(e>3).mean():4.1f}%")
         print(f"  {v:<13} anchors {n_anc:>7,} live {n_live:>7,}  {note}  "
-              f"[{tt[0]:.0f}+{tt[1]:.0f}+{tt[2]:.0f}s]", flush=True)
+              f"[{tt[0]:.0f}+{tt[1]:.0f}+{tt[2]:.0f}s]{orphan_note}", flush=True)
 
 
 if __name__ == "__main__":

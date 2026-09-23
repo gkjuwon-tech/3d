@@ -88,6 +88,37 @@ def sample(img, row, col, order=1):
                                    mode="nearest", prefilter=False)
 
 
+def geodesic_anchor_dist(d, anchordist_path, h, jump_vox, limit):
+    """Pixels from the nearest live anchor, walking only between neighbours
+    whose depths differ by less than jump_vox voxels."""
+    from scipy import sparse
+    from scipy.sparse.csgraph import dijkstra
+    hit = np.isfinite(d)
+    live = np.nan_to_num(np.load(anchordist_path), nan=1e9) == 0
+    H_, W_ = d.shape
+    idx = -np.ones(d.shape, dtype=np.int64)
+    idx[hit] = np.arange(int(hit.sum()))
+    rows, cols = [], []
+    for sa, sb in (((slice(None, -1), slice(None)), (slice(1, None), slice(None))),
+                   ((slice(None), slice(None, -1)), (slice(None), slice(1, None)))):
+        a, b = idx[sa], idx[sb]
+        ok = (a >= 0) & (b >= 0)
+        ok &= np.abs(np.nan_to_num(d[sa]) - np.nan_to_num(d[sb])) < jump_vox * h
+        rows.append(a[ok])
+        cols.append(b[ok])
+    r = np.concatenate(rows)
+    c = np.concatenate(cols)
+    n = int(hit.sum())
+    G = sparse.coo_matrix((np.ones(len(r)), (r, c)), shape=(n, n)).tocsr()
+    src = idx[live & hit]
+    out = np.full(d.shape, np.inf)
+    if len(src):
+        dist = dijkstra(G, directed=False, indices=src, min_only=True,
+                        limit=limit, unweighted=True)
+        out[hit] = dist
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--occ", required=True, help="grid definition (and a hull "
@@ -101,6 +132,22 @@ def main():
                     help="pixels from the nearest anchor at which a depth "
                          "sample's weight has fallen to 1/e")
     ap.add_argument("--conf-floor", type=float, default=0.02)
+    ap.add_argument("--conf-mode", default="anchor", choices=["anchor", "geodesic"],
+                    help="geodesic: distance to an anchor measured without "
+                         "crossing a depth jump, so a finger does not borrow "
+                         "the confidence of the torso behind it")
+    ap.add_argument("--jump-vox", type=float, default=4.0,
+                    help="a step larger than this between neighbouring pixels "
+                         "is a depth jump for the geodesic distance")
+    ap.add_argument("--quorum", type=int, default=1,
+                    help="views that must call a voxel empty before it may be "
+                         "carved against what the other views say")
+    ap.add_argument("--empty-vox", type=float, default=1.0,
+                    help="how far in front of a view's surface counts as that "
+                         "view calling the voxel empty")
+    ap.add_argument("--contra-views", type=int, default=0,
+                    help="drop depth pixels contradicted by at least this many "
+                         "other views (tools/depth_filter.py --write)")
     ap.add_argument("--hull-cache", default=None,
                     help="npy to load the hull field from, or save it to")
     ap.add_argument("--sil-up", type=int, default=4)
@@ -165,6 +212,10 @@ def main():
         print(f"fusing depth over {len(X):,} voxels", flush=True)
         num = np.zeros(len(X), dtype=np.float32)
         den = np.zeros(len(X), dtype=np.float32)
+        if args.quorum > 1:
+            num_n = np.zeros(len(X), dtype=np.float32)   # surface/inside only
+            den_n = np.zeros(len(X), dtype=np.float32)
+            n_pos = np.zeros(len(X), dtype=np.int16)     # views calling it empty
         tau = args.trunc
         for v in views:
             d = np.load(os.path.join(args.depth_dir, f"{v}.npy"))
@@ -174,9 +225,17 @@ def main():
             dfill = d[idx[0], idx[1]]
             conf = np.ones_like(d)
             dist_p = os.path.join(args.depth_dir, f"{v}_anchordist.npy")
-            if os.path.exists(dist_p):
+            if args.conf_mode == "geodesic":
+                dist = geodesic_anchor_dist(d, os.path.join(args.depth_dir,
+                                                            f"{v}_anchordist.npy"),
+                                            h, args.jump_vox, args.conf_len * 6)
+                conf = np.maximum(np.exp(-dist / args.conf_len), args.conf_floor)
+            elif os.path.exists(dist_p):
                 dist = np.nan_to_num(np.load(dist_p), nan=1e6)
                 conf = np.maximum(np.exp(-dist / args.conf_len), args.conf_floor)
+            if args.contra_views > 0:
+                cp = os.path.join(args.depth_dir, f"{v}_contra.npy")
+                conf = np.where(np.load(cp) >= args.contra_views, 0.0, conf)
             if args.normals_dir:
                 nzv = np.abs(np.load(os.path.join(args.normals_dir, f"{v}.npy"))
                              [..., 2]).astype(np.float32)
@@ -202,10 +261,22 @@ def main():
                 wt = xp.where(ok, c * xp.where(s < 0, 1 + s / tau, 1.0), 0)
                 num[j0:j1] += cpu(wt * xp.clip(s, -tau, tau))
                 den[j0:j1] += cpu(wt)
+                if args.quorum > 1:
+                    neg = wt * (s <= args.empty_vox)
+                    num_n[j0:j1] += cpu(neg * xp.clip(s, -tau, tau))
+                    den_n[j0:j1] += cpu(neg)
+                    n_pos[j0:j1] += cpu((wt > 0) & (s > args.empty_vox)).astype(np.int16)
             del dg, cg_
             print(f"  {v}: {time.time()-t0:.0f}s", flush=True)
         seen = den > 1e-6
         D = np.where(seen, num / np.maximum(den, 1e-12), -tau).astype(np.float32)
+        if args.quorum > 1:
+            # a voxel only one view calls empty keeps what the others say about
+            # it: one view with a wrong depth cannot carve on its own
+            lone = (n_pos < args.quorum) & (den_n > 1e-6)
+            D = np.where(lone, np.minimum(D, num_n / np.maximum(den_n, 1e-12)), D)
+            print(f"quorum {args.quorum}: {int(lone.sum()):,} voxels held by "
+                  f"their other views", flush=True)
         F[ii] = np.maximum(H[ii], D)
         del X, num, den, D
     if args.smooth > 0:

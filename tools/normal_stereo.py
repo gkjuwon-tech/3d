@@ -112,9 +112,19 @@ def sweep(meta, target, sources, nA, nB, hitB, relief, hull, hit, offsets,
     return cost
 
 
+def normal_cost(meta, target, sources, nA, nB, hitB, depth, hull, hit, win=11,
+                facing_min=0.15, top=2):
+    """Aggregated cross-view normal disagreement of a given depth map, per
+    pixel: the same score sweep_fast minimises, evaluated at one depth. Lets
+    a finished depth map be checked against the other views."""
+    z, c = sweep_fast(meta, target, sources, nA, nB, hitB, depth, hull, hit,
+                      0.0, 0.0, 1.0, 1.0, win, facing_min, top, fixed=True)
+    return c
+
+
 def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
                lo, hi, coarse=4.0, fine=1.0, win=11, facing_min=0.15, top=2,
-               vox=1.0 / 1024):
+               vox=1.0 / 1024, fixed=False):
     """Coarse-to-fine version of sweep(), on the xp backend.
 
     A pass every `coarse` voxels over [lo, hi] finds each pixel's basin, then
@@ -165,6 +175,10 @@ def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
         agg = (b0 + b1) / 2 if top == 2 else b0
         return xp.where(d >= floor - 1e-6, agg, xp.inf)
 
+    if fixed:                       # just score the depth as given
+        cost = np.full(hit.shape, np.inf, dtype=np.float32)
+        cost[rows, cols] = cpu(cost_at(base))
+        return relief, cost
     # coarse
     best_c = xp.full(len(rows), xp.inf, dtype=xp.float32)
     best_o = xp.zeros(len(rows), dtype=xp.float32)
