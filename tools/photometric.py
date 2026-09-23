@@ -38,6 +38,23 @@ LIGHTS = {
 }
 
 
+def light_set(n):
+    """Camera-space light directions. 4: the original rig (kept so old
+    renders still solve). Otherwise n lights evenly around the view axis,
+    alternating between 25 and 45 degrees off it: with shadows, a pixel needs
+    three lights that reach it, and next to an arm or under a wing four lights
+    left 17% of Lucy's view 14 with two or fewer."""
+    if n == 4:
+        return dict(LIGHTS)
+    out = {}
+    for i in range(n):
+        az = 2 * math.pi * i / n
+        el = math.radians(25.0 if i % 2 == 0 else 45.0)
+        out[chr(ord("a") + i)] = (math.sin(el) * math.cos(az),
+                                  math.sin(el) * math.sin(az), math.cos(el))
+    return out
+
+
 def render(argv):
     import bpy
     from mathutils import Euler, Matrix, Vector
@@ -55,9 +72,14 @@ def render(argv):
                          "sample identically, so the only noise is edge "
                          "coverage; the denoiser can only move good values")
     ap.add_argument("--yaw", type=float, default=180.0)
-    ap.add_argument("--shadows", action="store_true",
-                    help="leave cast shadows on; off by default so the first "
-                         "measurement isolates the Lambertian assumption")
+    ap.add_argument("--lights", type=int, default=4,
+                    help="number of lights per view (see light_set)")
+    ap.add_argument("--no-shadows", action="store_true",
+                    help="lights cast no shadows (not physical; for isolating "
+                         "the Lambertian model). The default keeps them, as a "
+                         "real capture has them -- and so did every render "
+                         "made before this flag: the old switch set "
+                         "light.cycles.cast_shadow, which Blender 4 ignores")
     args = ap.parse_args(argv)
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
@@ -125,18 +147,22 @@ def render(argv):
             Euler([math.radians(90), 0, 0], "XYZ").to_matrix().to_4x4()
         plan = [(args.view, m)]
 
+    import json as _json
+    lights = light_set(args.lights)
+    with open(os.path.join(out, "lights.json"), "w") as f:
+        _json.dump(lights, f)
     for view, mw in plan:
         cam.matrix_world = mw
         bpy.context.view_layer.update()
         R = cam.matrix_world.to_3x3()
-        render_lights(sc, view, R, out, args)
+        render_lights(sc, view, R, out, args, lights)
     print("[done]", out, flush=True)
 
 
-def render_lights(sc, view, R, out, args):
+def render_lights(sc, view, R, out, args, lights):
     import bpy
     from mathutils import Matrix, Vector
-    for name, d in LIGHTS.items():
+    for name, d in lights.items():
         for o in list(sc.objects):
             if o.type == "LIGHT":
                 bpy.data.objects.remove(o, do_unlink=True)
@@ -145,8 +171,8 @@ def render_lights(sc, view, R, out, args):
         ld = bpy.data.lights.new(f"L{name}", type="SUN")
         ld.energy = math.pi          # so a facing surface returns albedo
         ld.angle = 0.0
-        if not args.shadows:
-            ld.cycles.cast_shadow = False
+        if args.no_shadows:
+            ld.use_shadow = False
         lo_ = bpy.data.objects.new(f"L{name}", ld)
         sc.collection.objects.link(lo_)
         z = world_dir
@@ -159,16 +185,15 @@ def render_lights(sc, view, R, out, args):
                                    (0, 0, 0, 1)))
         sc.render.filepath = os.path.join(out, f"{view}_{name}.exr")
         bpy.ops.render.render(write_still=True)
-    print(f"[view] {view} lit {len(LIGHTS)} ways", flush=True)
+    print(f"[view] {view} lit {len(lights)} ways", flush=True)
 
 
 def solve(argv):
     """Solve normals from the lit renders. Runs under Blender, which reads EXR.
 
-    Per pixel, the darkest observations are dropped before solving. A surface
-    facing away from a light has a negative L.n that the render clamps to zero,
-    which is not a measurement of anything; keeping it carries the mean error
-    from 5.90 degrees to 16.47.
+    Per pixel, only the lights that reach it are used (see below); a pixel
+    with fewer than three has no normal (zero vector), which every consumer
+    downstream already reads as "no information".
     """
     import itertools
     import json
@@ -179,8 +204,10 @@ def solve(argv):
     ap.add_argument("--dir", required=True, help="directory of lit renders")
     ap.add_argument("--out", required=True, help="directory for normal .npy")
     ap.add_argument("--views-json", required=True)
-    ap.add_argument("--use", type=int, default=3,
-                    help="brightest lights kept per pixel")
+    ap.add_argument("--shadow-frac", type=float, default=0.02,
+                    help="a light reading below this fraction of the pixel's "
+                         "brightest counts as shadowed")
+    ap.add_argument("--shadow-abs", type=float, default=1e-3)
     ap.add_argument("--score-against", default=None,
                     help="a view set with normal_npy, to report accuracy")
     args = ap.parse_args(argv)
@@ -198,8 +225,10 @@ def solve(argv):
         bpy.data.images.remove(img)
         return buf.reshape(h, w, 4)[::-1]
 
-    names = list(LIGHTS)
-    L = np.array([LIGHTS[k] for k in names], dtype=np.float64)
+    lp = os.path.join(src, "lights.json")
+    lights = json.load(open(lp)) if os.path.exists(lp) else dict(LIGHTS)
+    names = list(lights)
+    L = np.array([lights[k] for k in names], dtype=np.float64)
     L /= np.linalg.norm(L, axis=1, keepdims=True)
 
     for view in meta["views"]:
@@ -219,20 +248,28 @@ def solve(argv):
         B = obs[lit]
         Ls = L[present]
 
-        k = min(args.use, len(present))
+        # A light in shadow -- cast (the render keeps shadows, as a real
+        # capture would) or attached (facing away) -- reads zero, which is
+        # not a measurement. Each pixel is solved from the lights that do
+        # reach it, all of them, and a pixel fewer than three reach has no
+        # normal at all: two equations do not fix three unknowns, and the
+        # "three brightest" rule this replaces then solved with a zero in the
+        # system and returned garbage without a sign of it -- on Lucy's view
+        # 14, 17% of the object, nearly all of it beside the raised arm.
+        Ls_ = Ls
+        litm = B > np.maximum(args.shadow_frac * B.max(1, keepdims=True),
+                              args.shadow_abs)
+        g = np.zeros((len(B), 3))
+        pats, inv = np.unique(litm, axis=0, return_inverse=True)
+        inv = inv.ravel()
+        for j, pat in enumerate(pats):
+            if pat.sum() < 3:
+                continue
+            sel = inv == j
+            M = Ls_[pat]
+            g[sel] = np.linalg.lstsq(M, B[sel][:, pat].T, rcond=None)[0].T
+        n_unmeasured = int((litm.sum(1) < 3).sum())
         normal = np.zeros((H, W, 3), dtype=np.float32)
-        if k < len(present):
-            order = np.argsort(-B, axis=1)[:, :k]
-            g = np.zeros((len(B), 3))
-            for combo in itertools.combinations(range(len(present)), k):
-                sel = np.all(np.sort(order, axis=1) == np.array(combo), axis=1)
-                if not sel.any():
-                    continue
-                M = Ls[list(combo)]
-                g[sel] = np.linalg.solve(
-                    M.T @ M, M.T @ B[sel][:, list(combo)].T).T
-        else:
-            g = np.linalg.lstsq(Ls, B.T, rcond=None)[0].T
         a = np.linalg.norm(g, axis=1)
         ok = a > 1e-4
         n = np.zeros_like(g)
@@ -255,7 +292,8 @@ def solve(argv):
                     np.clip((normal[m] * ref[m]).sum(1), -1, 1)))
                 note = (f"  mean {ang.mean():5.2f} deg  median "
                         f"{np.median(ang):5.2f}  <5 {100*(ang<5).mean():4.1f}%")
-        print(f"  {view:<13} {len(present)} lights -> {lit.sum():,} px{note}",
+        print(f"  {view:<13} {len(present)} lights -> {lit.sum():,} px, "
+              f"{100*n_unmeasured/max(len(B), 1):.1f}% with < 3 lit (no normal){note}",
               flush=True)
     print(f"[done] {out}", flush=True)
 

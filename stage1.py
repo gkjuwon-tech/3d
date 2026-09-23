@@ -5,8 +5,11 @@
                        bottom, and eight three-quarter views at +-45 degrees):
                        rgb + anti-aliased mask, plus the point-sampled depth and
                        normal passes kept for scoring only
-  data/<name>/photo/   each view lit from four known directions (Lambertian)
-  data/<name>/normals/ camera-space normals solved from those four images
+  data/<name>/photo/   each view lit from eight known directions (Lambertian,
+                       with the shadows a real capture has); photo/lights.json
+                       records them
+  data/<name>/normals/ camera-space normals solved per pixel from the lights
+                       that reach it; none where fewer than three do
 
 Stage 2 reads views/{mask,rgb}, views/cameras.json and normals/ -- the
 images and the cameras -- and nothing else.
@@ -52,6 +55,11 @@ def main():
                          "the front camera; both renderers rotate first and "
                          "then re-centre on the bounding box, so any angle "
                          "keeps them aligned")
+    ap.add_argument("--lights", type=int, default=8,
+                    help="lights per view. Four left 17%% of a view with two "
+                         "or fewer unshadowed next to Lucy's raised arm, and "
+                         "the old solver returned garbage there; eight leave "
+                         "under 1%%")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
 
@@ -68,17 +76,25 @@ def main():
                  "--samples", str(a.samples), "--aux", "diagonal8",
                  "--yaw", str(a.yaw)], log)
         blender("exr_to_npy.py", ["--dir", views], log)
-    if a.force or not os.path.isdir(photo) or len(os.listdir(photo)) < 56:
+    import json as _json
+    lp = os.path.join(photo, "lights.json")
+    have = len(_json.load(open(lp))) if os.path.exists(lp) else 0
+    fresh_photo = False
+    n_exr = len([f for f in os.listdir(photo) if f.endswith(".exr")]) \
+        if os.path.isdir(photo) else 0
+    if a.force or have != a.lights or n_exr < 14 * a.lights:
+        fresh_photo = True
         blender("photometric.py",
                 ["render", "--mesh", mesh, "--out", photo,
                  "--views-json", os.path.join(views, "cameras.json"),
                  "--res", str(a.res), "--yaw", str(a.yaw),
-                 # a shadowless sun on a diffuse surface shades every sample
-                 # alike: 4 undenoised samples score 0.82 deg mean error on the
-                 # bunny's front against 0.74 for 24 denoised, in a seventh of
-                 # the time
-                 "--samples", "4", "--no-denoise"], log)
-    if a.force or not os.path.isdir(normals) or len(os.listdir(normals)) < 14:
+                 # a sun on a diffuse surface, direct light only, shades every
+                 # sample alike: 4 undenoised samples score 0.82 deg mean error
+                 # on the bunny's front against 0.74 for 24 denoised, in a
+                 # seventh of the time
+                 "--samples", "4", "--no-denoise", "--lights", str(a.lights)], log)
+    if a.force or fresh_photo or not os.path.isdir(normals) or \
+            len(os.listdir(normals)) < 14:
         blender("photometric.py",
                 ["solve", "--dir", photo, "--out", normals,
                  "--views-json", os.path.join(views, "cameras.json"),

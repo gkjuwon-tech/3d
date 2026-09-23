@@ -12,13 +12,14 @@ Reads only data/<name>/views/{mask,rgb,cameras.json} and data/<name>/normals.
               distance -- a robust one: weighted median over the views, then
               the mean of those that agree -- and meshed at its zero level
               (tools/fuse_field.py)
-  3b. pass 2  (--passes 2, the default) where two or more anchored views
-              agree in that fusion, the surface is rendered back into every
-              view as extra anchors (tools/consensus.py), each view's depth
-              is re-solved against them (depth_mv.py --pass1, solve only),
-              and the result is fused again. A view's depth is only right
-              near its anchors; this gives it the anchors the other views
-              found.
+  3b. passes  (--passes k) where two or more anchored views agree in that
+              fusion, and the fused surface's normal matches the view's own,
+              the surface is rendered back into every view as extra anchors
+              (tools/consensus.py), each view's depth is re-solved against
+              them (depth_mv.py --pass1, solve only), and the result is fused
+              again -- with no view allowed to see past that verified surface
+              (fuse_field.py --clamp-dir). A view's depth is only right near
+              its anchors; this gives it the anchors the other views found.
   4. retopo   QuadriFlow quad base plus a subdivided, shrink-wrapped quad
               mesh carrying the detail (tools/retopo.py)
   5. score    only if --gt-mesh is given: Chamfer, containment, volume,
@@ -176,6 +177,7 @@ def main():
     elif not fused:
         grid = os.path.join(hull, "grid.npz")
         prev = depth
+        clamp = []          # line of sight stops at the last verified surface
         if a.joint:
             # every view solved together, then each re-solved at full
             # resolution against the joint result (tools/joint_depth.py)
@@ -196,7 +198,7 @@ def main():
             fk = os.path.join(rec, f"fuse{k-1}")
             if a.force or not os.path.exists(fk + "_support.npy"):
                 fuse(prev, fk, ["--support-out", fk + "_support.npy"]
-                     + ([] if a.keep_passes else ["--no-mesh"]))
+                     + ([] if a.keep_passes else ["--no-mesh"]) + clamp)
             cons = os.path.join(rec, f"consensus{k}")
             if a.force or not os.path.exists(os.path.join(cons, f"{names[-1]}.npy")):
                 run([PY, tool("consensus.py"), "--field", fk + "_field.npy",
@@ -205,13 +207,14 @@ def main():
                      "--normals-dir", normals, "--out", cons], log)
             dk = os.path.join(rec, f"depth{k}")
             depth_pass(dk, ["--pass1", depth, "--consensus", cons])
+            clamp = ["--clamp-dir", cons]
             for f in (fk + "_field.npy", fk + "_support.npy"):
                 if not a.keep_passes and os.path.exists(f):
                     os.remove(f)
             T[f"pass{k}"] = time.time() - t0
             t0 = time.time()
             prev = dk
-        fuse(prev, mesh)
+        fuse(prev, mesh, clamp)
     T["fuse"] = time.time() - t0
     if a.stop_after == "fuse":
         print("timings: " + "  ".join(f"{k} {v/60:.1f}min" for k, v in T.items()))
