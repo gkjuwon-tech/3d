@@ -126,7 +126,10 @@ for rel in ["stage2.log", "mesh.ply", "mesh_occ.npz", "mesh_field.npy", "fuse1.p
     if os.path.exists(p):
         shutil.copy(p, os.path.join(out, rel.replace("/", "__")))
 import numpy as np
-final = "depth2" if os.path.isdir(rec + "/depth2") else "depth"
+# the last depth pass: depth<k> for the highest k, else depth_joint, else depth
+ks = [int(f[5:]) for f in os.listdir(rec) if f.startswith("depth") and f[5:].isdigit()]
+final = ("depth%%d" %% max(ks)) if ks else (
+    "depth_joint" if os.path.isdir(rec + "/depth_joint") else "depth")
 for f in os.listdir(rec + "/" + final):
     if f.endswith(("_relief.npy", "_sweep.npy")):
         continue                      # first-pass internals, large

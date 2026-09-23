@@ -217,7 +217,8 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
         z_st, best = ns.sweep_fast(meta, view, srcs, nA, nB, hitB, relief, hull,
                                    hit, -args.range_front, args.range_back,
                                    args.coarse, 1.0, args.win,
-                                   masked=not args.sweep_unmasked)
+                                   masked=not args.sweep_unmasked,
+                                   trunc=args.sweep_trunc)
     else:
         offsets = (np.arange(-args.range_front, args.range_back + 1e-9,
                              args.step) * VOX).astype(np.float32)
@@ -319,6 +320,9 @@ def main():
                     help="fast: coarse-to-fine, 30 offsets; full: every step")
     ap.add_argument("--coarse", type=float, default=4.0,
                     help="voxels between offsets in the fast sweep's first pass")
+    ap.add_argument("--sweep-trunc", type=float, default=0.02,
+                    help="cap each pixel's matching cost at this before the "
+                         "window average (truncated cost); 0 = uncapped")
     ap.add_argument("--sweep-unmasked", action="store_true",
                     help="old window: background counts as the worst match")
     ap.add_argument("--anchor-cost", type=float, default=0.012)

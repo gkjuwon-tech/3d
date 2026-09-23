@@ -85,6 +85,11 @@ def main():
     ap.add_argument("--passes", type=int, default=2,
                     help="k > 1: k-1 rounds of re-solving every view against "
                          "the surface the others agreed on, fusing each time")
+    ap.add_argument("--joint", action="store_true",
+                    help="before the consensus passes, solve all views' depths "
+                         "as one system (tools/joint_depth.py)")
+    ap.add_argument("--joint-args", default="",
+                    help="extra arguments for joint_depth.py")
     ap.add_argument("--keep-passes", action="store_true",
                     help="mesh and keep every intermediate fusion")
     ap.add_argument("--force", action="store_true")
@@ -158,7 +163,7 @@ def main():
                 + list(extra), log)
 
     t0 = time.time()
-    depth_pass(depth, ["--save-pass1"] if a.passes > 1 else [])
+    depth_pass(depth, ["--save-pass1"] if a.passes > 1 or a.joint else [])
     T["depth"] = time.time() - t0
     if a.stop_after == "depth":
         return
@@ -166,11 +171,25 @@ def main():
     # 3. fuse (and the second pass) ---------------------------------------------
     t0 = time.time()
     mesh = os.path.join(rec, "mesh")
-    if a.passes == 1:
+    if a.passes == 1 and not a.joint:
         fuse(depth, mesh)
     elif not fused:
         grid = os.path.join(hull, "grid.npz")
         prev = depth
+        if a.joint:
+            # every view solved together, then each re-solved at full
+            # resolution against the joint result (tools/joint_depth.py)
+            jdir = os.path.join(rec, "joint")
+            if a.force or not os.path.exists(os.path.join(jdir, f"{names[-1]}.npy")):
+                run([PY, tool("joint_depth.py"), "--views", views,
+                     "--hull-views", os.path.join(hull, "views"),
+                     "--normals-dir", normals, "--depth-dir", depth,
+                     "--out", jdir] + a.joint_args.split(), log)
+            dj = os.path.join(rec, "depth_joint")
+            depth_pass(dj, ["--pass1", depth, "--consensus", jdir])
+            T["joint"] = time.time() - t0
+            t0 = time.time()
+            prev = dj
         for k in range(2, a.passes + 1):
             # fuse what we have, render the agreed surface into every view,
             # re-solve every view against it

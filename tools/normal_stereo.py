@@ -124,7 +124,7 @@ def normal_cost(meta, target, sources, nA, nB, hitB, depth, hull, hit, win=11,
 
 def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
                lo, hi, coarse=4.0, fine=1.0, win=11, facing_min=0.15, top=2,
-               vox=1.0 / 1024, fixed=False, masked=True):
+               vox=1.0 / 1024, fixed=False, masked=True, trunc=0.0):
     """Coarse-to-fine version of sweep(), on the xp backend.
 
     A pass every `coarse` voxels over [lo, hi] finds each pixel's basin, then
@@ -139,6 +139,14 @@ def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
     across the whole width of a finger, a toe, a torch knob -- the cost was
     mostly background, and the thin parts that most need an anchor could
     never get one.
+
+    trunc: cap each pixel's cost before the window average (truncated
+    absolute differences). Uncapped, one pixel the source view sees occluded
+    costs 2.0 and adds 2/121 = 0.017 to its 11x11 window -- more than the
+    whole anchor threshold -- so near any occlusion edge in any source view,
+    even the true depth failed: scored at ground-truth depth on Lucy's front
+    view only 45% of pixels passed. Capped at 0.02: 83% pass, and the true
+    depth beats +-3 and +-8 voxels on 92.6% of pixels instead of 78.7%.
     """
     from xp import cpu, ndi, xp
     res = hit.shape[0]
@@ -180,7 +188,10 @@ def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
             ok = hBs[ri, ci] & facing
             dot = xp.sum(nAp * nBs[ri, ci], axis=1)
             img = xp.full(hit.shape, 0.0 if masked else 2.0, dtype=xp.float32)
-            img[R, C] = xp.where(ok, 1.0 - dot, 2.0)
+            if trunc > 0:
+                img[R, C] = xp.where(ok, xp.minimum(1.0 - dot, trunc), trunc)
+            else:
+                img[R, C] = xp.where(ok, 1.0 - dot, 2.0)
             c_s = ndi.uniform_filter(img, win, mode="nearest")[R, C]
             b1 = xp.minimum(b1, xp.maximum(b0, c_s))
             b0 = xp.minimum(b0, c_s)
