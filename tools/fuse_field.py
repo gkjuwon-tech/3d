@@ -240,6 +240,13 @@ def main():
                          "with distance d to its own depth discontinuities "
                          "(jumps over --edge-vox). 0 disables")
     ap.add_argument("--edge-vox", type=float, default=4.0)
+    ap.add_argument("--edge-floor", type=float, default=0.05,
+                    help="the edge factor never falls below this. At the jump "
+                         "pixel itself it was exactly zero, so in a crevice -- "
+                         "all jumps -- every view fell silent at once, the "
+                         "voxels there defaulted to solid, and the boundary of "
+                         "that silence meshed as crumbs: under Lucy's right ear "
+                         "F@1 77.7 -> 86.3, loose pieces 35 -> 18")
     ap.add_argument("--clamp-dir", default=None,
                     help="consensus depths (consensus.py): a view may not claim "
                          "to see further than this verified surface along its "
@@ -352,7 +359,8 @@ def main():
                 jump[:, 1:] |= jc
                 jump[:, :-1] |= jc
                 jd = ndimage.distance_transform_edt(~jump)
-                conf = conf * (1.0 - np.exp(-jd / args.edge_len))
+                conf = conf * np.maximum(1.0 - np.exp(-jd / args.edge_len),
+                                         args.edge_floor)
             conf = np.where(hitv, conf, 0).astype(np.float32)
             # the per-voxel sampling below is the whole cost of fusion, and
             # runs on the xp backend: the GPU when THREED_GPU=1
