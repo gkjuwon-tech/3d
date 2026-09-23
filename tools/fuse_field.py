@@ -136,6 +136,42 @@ def geodesic_anchor_dist(d, anchordist_path, h, jump_vox, limit):
     return out
 
 
+def drop_specks(d, h, min_px, jump_vox):
+    """NaN out pieces of a depth map smaller than min_px, pixels joined where
+    neighbours differ by less than jump_vox voxels.
+
+    Where the depth solve cut its edges along a crease it leaves thousands of
+    one- and two-pixel islands per view (Lucy: ~120k pixels over 14 views),
+    each floating to whatever depth its last surviving edge suggested. Fused,
+    every island is a needle along its ray -- a spike where it is too shallow,
+    a crack where too deep; the shards and pits under Lucy's right ear. With
+    no depth, the island's pixels abstain and the views around fill in:
+    F@1 there 86.3 -> 89.5."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    hit = np.isfinite(d)
+    idx = -np.ones(d.shape, np.int64)
+    idx[hit] = np.arange(int(hit.sum()))
+    dd = np.nan_to_num(d)
+    r, c = [], []
+    for sa, sb in (((slice(None, -1), slice(None)), (slice(1, None), slice(None))),
+                   ((slice(None), slice(None, -1)), (slice(None), slice(1, None)))):
+        ia, ib = idx[sa], idx[sb]
+        ok = (ia >= 0) & (ib >= 0) & (np.abs(dd[sa] - dd[sb]) < jump_vox * h)
+        r.append(ia[ok])
+        c.append(ib[ok])
+    r = np.concatenate(r)
+    c = np.concatenate(c)
+    n = int(hit.sum())
+    _, lab = connected_components(coo_matrix((np.ones(len(r)), (r, c)),
+                                             shape=(n, n)), directed=False)
+    small = np.bincount(lab)[lab] < min_px
+    out = d.copy()
+    hr, hc = np.nonzero(hit)
+    out[hr[small], hc[small]] = np.nan
+    return out
+
+
 def robust_fuse(X, per_view, meta, res, h, tau, inlier):
     """Weighted median of the views' truncated distances, then the weighted
     mean of the views within `inlier` voxels of it. Returns D (voxels, -tau
@@ -247,6 +283,9 @@ def main():
                          "voxels there defaulted to solid, and the boundary of "
                          "that silence meshed as crumbs: under Lucy's right ear "
                          "F@1 77.7 -> 86.3, loose pieces 35 -> 18")
+    ap.add_argument("--speckle-px", type=int, default=30,
+                    help="depth pieces smaller than this abstain (drop_specks); "
+                         "0 keeps them")
     ap.add_argument("--clamp-dir", default=None,
                     help="consensus depths (consensus.py): a view may not claim "
                          "to see further than this verified surface along its "
@@ -317,6 +356,9 @@ def main():
         per_view = []
         for v in views:
             d = np.load(os.path.join(args.depth_dir, f"{v}.npy"))
+            if args.speckle_px > 0:
+                d = drop_specks(d.astype(np.float64), h, args.speckle_px,
+                                args.edge_vox)
             if args.clamp_dir:
                 # Inside a solid, the views that got its skin right are past
                 # their truncation band and abstain; a view that put its
