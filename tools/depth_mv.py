@@ -118,16 +118,21 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
     local = ndimage.gaussian_filter(gap, args.center_sigma) / np.maximum(wts, 1e-9)
     relief = relief + local
     nA = ns.world_normals(views_dir, normals_dir, view, meta)
-    offsets = (np.arange(-args.range_front, args.range_back + 1e-9, args.step)
-               * VOX).astype(np.float32)
     srcs = [s for s in nB if s != view]
-    cost = ns.sweep(meta, view, srcs, nA, nB, hitB, relief, hull, hit,
-                    offsets, args.win)
-    k = np.argmin(cost, axis=0)
-    best = np.take_along_axis(cost, k[None], 0)[0].astype(np.float32)
-    off = refine_parabola(cost, k, offsets)
-    del cost
-    z_st = relief + off
+    if args.sweep == "fast":
+        z_st, best = ns.sweep_fast(meta, view, srcs, nA, nB, hitB, relief, hull,
+                                   hit, -args.range_front, args.range_back,
+                                   args.coarse, 1.0, args.win)
+    else:
+        offsets = (np.arange(-args.range_front, args.range_back + 1e-9,
+                             args.step) * VOX).astype(np.float32)
+        cost = ns.sweep(meta, view, srcs, nA, nB, hitB, relief, hull, hit,
+                        offsets, args.win)
+        k = np.argmin(cost, axis=0)
+        best = np.take_along_axis(cost, k[None], 0)[0].astype(np.float32)
+        off = refine_parabola(cost, k, offsets)
+        del cost
+        z_st = relief + off
     t2 = time.time()
 
     # 3. anchored robust solve
@@ -178,6 +183,10 @@ def main():
                     help="pixels; smoothing of the gap that centres the sweep")
     ap.add_argument("--step", type=float, default=1.0)
     ap.add_argument("--win", type=int, default=11)
+    ap.add_argument("--sweep", default="fast", choices=["fast", "full"],
+                    help="fast: coarse-to-fine, 30 offsets; full: every step")
+    ap.add_argument("--coarse", type=float, default=4.0,
+                    help="voxels between offsets in the fast sweep's first pass")
     ap.add_argument("--anchor-cost", type=float, default=0.012)
     ap.add_argument("--anchor-len", type=float, default=8.0,
                     help="screening length of an anchor, in pixels")

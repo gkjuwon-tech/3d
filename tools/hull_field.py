@@ -41,8 +41,10 @@ from PIL import Image
 from scipy import ndimage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fuse_field import cam, project, sample, silhouette_sdf  # noqa: E402
+from aa_sdf import contour_sdf  # noqa: E402
+from fuse_field import cam, silhouette_sdf  # noqa: E402
 from visual_hull import axis_and_sign, write_ply  # noqa: E402
+from xp import GPU, cpu, ndi, xp  # noqa: E402
 
 BG = 1e10
 
@@ -84,35 +86,54 @@ def grid_from_silhouettes(views, meta, res_vox, pad):
 
 
 def sdf_cached(views, meta, v, up, level, cache):
-    """The fine silhouette distance map, computed once per view.
+    """A view's silhouette distance map (world units), computed once.
 
-    It is needed twice -- for the coarse pass and for the band -- and the
-    distance transform at four times the image resolution is most of the cost
-    of the whole hull, so the first pass leaves it on disk.
+    up == 1 (the default) traces the 0.5 coverage contour at sub-pixel
+    precision and measures to it (aa_sdf.contour_sdf): 1.9 s a view. up > 1
+    is the older route, a distance transform on an up-times finer grid,
+    kept for comparison: 44 s a view at up == 4, and no more accurate.
     """
     path = os.path.join(cache, f"{v}_sdf.npy") if cache else None
     if path and os.path.exists(path):
         return np.load(path).astype(np.float32)
     px = meta["ortho_scale"] / meta["resolution"][0]
-    sd = silhouette_sdf(load_mask(views, v), px, up, level)
+    mask = load_mask(views, v)
+    if up == 1:
+        sd = contour_sdf(mask) * px
+    else:
+        sd = silhouette_sdf(mask, px, up, level)
     if path:
         np.save(path, sd.astype(np.float16))
     return sd
 
 
+def project_xp(meta, view, X, res):
+    """(row, col) with integers at pixel centres, on whichever backend X is."""
+    right, up, back, loc = (xp.asarray(a, dtype=xp.float32) for a in cam(meta, view))
+    o = meta["ortho_scale"]
+    rel = X - loc
+    col = (rel @ right / o + 0.5) * res - 0.5
+    row = (0.5 - rel @ up / o) * res - 0.5
+    return row, col
+
+
 def eval_H(views, meta, pts, up, level, cache=None):
-    """Exact hull distance (world units) at an (N, 3) float32 array."""
+    """Exact hull distance (world units) at an (N, 3) array of points."""
     res = meta["resolution"][0]
-    H = np.full(len(pts), -np.inf, dtype=np.float32)
+    pts = xp.asarray(pts, dtype=xp.float32)
+    H = xp.full(len(pts), -xp.inf, dtype=xp.float32)
+    step = 8_000_000 if not GPU else 40_000_000
     for v in meta["views"]:
-        sd = sdf_cached(views, meta, v, up, level, cache)
-        for j0 in range(0, len(pts), 8_000_000):
-            j1 = min(j0 + 8_000_000, len(pts))
-            row, col, _ = project(meta, v, pts[j0:j1], res)
-            H[j0:j1] = np.maximum(H[j0:j1], sample(sd, (row + 0.5) * up - 0.5,
-                                                    (col + 0.5) * up - 0.5))
+        sd = xp.asarray(sdf_cached(views, meta, v, up, level, cache))
+        for j0 in range(0, len(pts), step):
+            j1 = min(j0 + step, len(pts))
+            row, col = project_xp(meta, v, pts[j0:j1], res)
+            val = ndi.map_coordinates(sd, xp.stack([(row + 0.5) * up - 0.5,
+                                                    (col + 0.5) * up - 0.5]),
+                                      order=1, mode="nearest")
+            H[j0:j1] = xp.maximum(H[j0:j1], val)
         del sd
-    return H
+    return cpu(H)
 
 
 def centres(dims, lo, h, stride=1):
@@ -121,7 +142,8 @@ def centres(dims, lo, h, stride=1):
 
 
 def hull_depth(meta, view, Hf, lo, h, dims, mask, max_iter=400):
-    """Sphere-trace the hull field along every silhouette pixel's ray."""
+    """Sphere-trace the hull field along every silhouette pixel's ray.
+    Hf is the field on the active backend."""
     res = mask.shape[0]
     o = meta["ortho_scale"]
     right, up, back, loc = cam(meta, view)
@@ -130,31 +152,33 @@ def hull_depth(meta, view, Hf, lo, h, dims, mask, max_iter=400):
     v = (0.5 - (r + 0.5) / res) * o
     P0 = loc + u[:, None] * right + v[:, None] * up
     d = -back
-    # enter the grid's box along the ray
     box_lo, box_hi = lo, lo + dims * h
     with np.errstate(divide="ignore", invalid="ignore"):
         t0 = (box_lo - P0) / d
         t1 = (box_hi - P0) / d
     tmin = np.nanmax(np.minimum(t0, t1), axis=1)
-    tmax = np.nanmin(np.maximum(t0, t1), axis=1)
-    t = np.maximum(tmin, 0.0)
-    depth = np.full(len(r), np.nan)
-    live = np.arange(len(r))
+    tmax = xp.asarray(np.nanmin(np.maximum(t0, t1), axis=1))
+    P0 = xp.asarray(P0)
+    d = xp.asarray(d)
+    lo_x = xp.asarray(lo)
+    t = xp.asarray(np.maximum(tmin, 0.0))
+    depth = xp.full(len(r), xp.nan)
+    live = xp.arange(len(r))
     for _ in range(max_iter):
         X = P0[live] + t[live, None] * d
-        idx = ((X - lo) / h - 0.5).T
-        f = ndimage.map_coordinates(Hf, idx, order=1, mode="nearest")
+        idx = ((X - lo_x) / h - 0.5).T
+        f = ndi.map_coordinates(Hf, idx, order=1, mode="nearest")
         done = f < 0.05
-        depth[live[done]] = t[live[done]] + np.maximum(f[done], 0) * h
-        step = np.maximum(f, 0.25) * h
-        t[live] += np.where(done, 0, step)
+        depth[live[done]] = t[live[done]] + xp.maximum(f[done], 0) * h
+        t[live] += xp.where(done, 0, xp.maximum(f, 0.25) * h)
         live = live[~done & (t[live] < tmax[live])]
         if len(live) == 0:
             break
+    depth = cpu(depth)
     out = np.full(mask.shape, BG, dtype=np.float32)
     ok = np.isfinite(depth)
     out[r[ok], c[ok]] = depth[ok]
-    return out, len(live)
+    return out, int(len(live))
 
 
 def main():
@@ -163,7 +187,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--res", type=int, default=1024, help="voxels on the longest axis")
     ap.add_argument("--pad", type=float, default=0.02)
-    ap.add_argument("--sil-up", type=int, default=4)
+    ap.add_argument("--sil-up", type=int, default=1,
+                    help="1: sub-pixel contour distance (fast); >1: distance "
+                         "transform on an upsampled grid (the old route)")
     ap.add_argument("--sil-level", type=float, default=0.5)
     ap.add_argument("--offset", type=float, default=0.4,
                     help="voxels the hull is moved outward; covers the 0.35 "
@@ -219,8 +245,9 @@ def main():
     vdir = os.path.join(args.out, "views")
     os.makedirs(os.path.join(vdir, "depth_npy"), exist_ok=True)
     shutil.copy(os.path.join(args.views, "cameras.json"), vdir)
+    Hx = xp.asarray(H)
     for v in meta["views"]:
-        d, missed = hull_depth(meta, v, H, lo, h, dims, load_mask(args.views, v))
+        d, missed = hull_depth(meta, v, Hx, lo, h, dims, load_mask(args.views, v))
         np.save(os.path.join(vdir, "depth_npy", f"{v}.npy"), d)
         note = ""
         gp = os.path.join(args.views, "depth_npy", f"{v}.npy")

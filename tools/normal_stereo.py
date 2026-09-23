@@ -112,6 +112,87 @@ def sweep(meta, target, sources, nA, nB, hitB, relief, hull, hit, offsets,
     return cost
 
 
+def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
+               lo, hi, coarse=4.0, fine=1.0, win=11, facing_min=0.15, top=2,
+               vox=1.0 / 1024):
+    """Coarse-to-fine version of sweep(), on the xp backend.
+
+    A pass every `coarse` voxels over [lo, hi] finds each pixel's basin, then
+    a pass every `fine` voxels within +-coarse of it finds the minimum, which
+    a parabola through its neighbours refines below the step. Offsets
+    evaluated: (hi-lo)/coarse + 2*coarse/fine + 2 -- 30 instead of 81 for the
+    default range. Returns (depth, cost) as NumPy arrays, NaN / inf off hit.
+    """
+    from xp import cpu, ndi, xp
+    res = hit.shape[0]
+    o = meta["ortho_scale"]
+    P0, dA = pixel_rays(meta, target, res)
+    rows, cols = np.nonzero(hit)
+    R, C = xp.asarray(rows), xp.asarray(cols)
+    P = xp.asarray(P0[rows, cols])
+    dA = xp.asarray(dA)
+    nAp = xp.asarray(nA[rows, cols])
+    base = xp.asarray(relief[rows, cols].astype(np.float32))
+    floor = xp.asarray(hull[rows, cols].astype(np.float32))
+    srcs = []
+    for s in sources:
+        right, up, back, loc, _ = cam(meta, s)
+        facing = nAp @ xp.asarray(back.astype(np.float32)) > facing_min
+        if float(facing.mean()) < 1e-3:
+            continue                       # sees none of this view's surface
+        srcs.append((xp.asarray(right.astype(np.float32)),
+                     xp.asarray(up.astype(np.float32)),
+                     xp.asarray(loc.astype(np.float32)), facing,
+                     xp.asarray(nB[s]), xp.asarray(hitB[s])))
+
+    def cost_at(d):
+        X = P + d[:, None] * dA[None, :]
+        b0 = xp.full(len(d), 2.0, dtype=xp.float32)
+        b1 = xp.full(len(d), 2.0, dtype=xp.float32)
+        for right, up, loc, facing, nBs, hBs in srcs:
+            rel = X - loc
+            ci = xp.clip(xp.rint((rel @ right / o + 0.5) * res - 0.5)
+                         .astype(xp.int32), 0, res - 1)
+            ri = xp.clip(xp.rint((0.5 - rel @ up / o) * res - 0.5)
+                         .astype(xp.int32), 0, res - 1)
+            ok = hBs[ri, ci] & facing
+            dot = xp.sum(nAp * nBs[ri, ci], axis=1)
+            img = xp.full(hit.shape, 2.0, dtype=xp.float32)
+            img[R, C] = xp.where(ok, 1.0 - dot, 2.0)
+            c_s = ndi.uniform_filter(img, win, mode="nearest")[R, C]
+            b1 = xp.minimum(b1, xp.maximum(b0, c_s))
+            b0 = xp.minimum(b0, c_s)
+        agg = (b0 + b1) / 2 if top == 2 else b0
+        return xp.where(d >= floor - 1e-6, agg, xp.inf)
+
+    # coarse
+    best_c = xp.full(len(rows), xp.inf, dtype=xp.float32)
+    best_o = xp.zeros(len(rows), dtype=xp.float32)
+    for c in np.arange(lo, hi + 1e-9, coarse) * vox:
+        cc = cost_at(base + c)
+        better = cc < best_c
+        best_c = xp.where(better, cc, best_c)
+        best_o = xp.where(better, c, best_o)
+    # fine, around each pixel's basin
+    deltas = np.arange(-coarse, coarse + 1e-9, fine) * vox
+    F = xp.stack([cost_at(base + best_o + dd) for dd in deltas])
+    k = xp.argmin(F, axis=0)
+    K = len(deltas)
+    km, kp = xp.clip(k - 1, 0, K - 1), xp.clip(k + 1, 0, K - 1)
+    ar = xp.arange(len(rows))
+    c0, cm, cp = F[k, ar], F[km, ar], F[kp, ar]
+    den = cm - 2 * c0 + cp
+    okp = xp.isfinite(cm) & xp.isfinite(cp) & (den > 1e-9) & (k > 0) & (k < K - 1)
+    delta = xp.where(okp, 0.5 * (cm - cp) / xp.where(okp, den, 1), 0.0)
+    off = best_o + xp.asarray(deltas.astype(np.float32))[k] \
+        + xp.clip(delta, -0.5, 0.5) * fine * vox
+    z = np.full(hit.shape, np.nan, dtype=np.float32)
+    cost = np.full(hit.shape, np.inf, dtype=np.float32)
+    z[rows, cols] = cpu(base + off)
+    cost[rows, cols] = cpu(c0)
+    return z, cost
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--views", required=True)
