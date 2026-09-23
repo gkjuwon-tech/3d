@@ -172,6 +172,61 @@ def drop_specks(d, h, min_px, jump_vox):
     return out
 
 
+def outer_shell(F, tau, keep_frac=0.01):
+    """Keep only what a single closed outer surface would: solid pieces at
+    least keep_frac of the largest, and no air sealed inside them.
+
+    On Lucy the fused mesh came out as 1,188 pieces: the body (99.6% of the
+    area) and 1,187 loose crumbs, 96% of whose surface lay more than a voxel
+    from the truth. Sealed air pockets are the same kind of error inside out,
+    and would mesh as inner shells.
+    """
+    occ = F < 0
+    # solid face-connected, air corner-connected: the pairing under which a
+    # piece touching the body only at a voxel's edge or corner -- which
+    # marching cubes meshes as a separate surface -- counts as separate
+    lab, n = ndimage.label(occ)
+    if n > 1:
+        size = np.bincount(lab.ravel())
+        size[0] = 0
+        drop = size < keep_frac * size.max()
+        drop[0] = False
+        gone = drop[lab]
+        F[gone] = tau
+        occ &= ~gone
+        n_drop = int(drop.sum())
+    else:
+        n_drop = 0
+    del lab
+    air, na = ndimage.label(~occ, structure=np.ones((3, 3, 3), bool))
+    border = np.unique(np.concatenate([
+        air[0].ravel(), air[-1].ravel(), air[:, 0].ravel(), air[:, -1].ravel(),
+        air[:, :, 0].ravel(), air[:, :, -1].ravel()]))
+    sealed = ~np.isin(np.arange(na + 1), border)
+    sealed[0] = False
+    fill = sealed[air]
+    F[fill] = -tau
+    return F, n_drop, int(sealed.sum()), int(fill.sum())
+
+
+def largest_pieces(verts, faces, keep_frac):
+    """Mesh pieces with at least keep_frac of the largest's faces; the rest
+    are the one-voxel diamonds marching cubes leaves at ambiguous corners."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    _, lab = connected_components(coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])),
+                                             shape=(len(verts),) * 2), directed=False)
+    fl = lab[faces[:, 0]]
+    size = np.bincount(fl)
+    keep = (size >= keep_frac * size.max())[fl]
+    faces = faces[keep]
+    used = np.unique(faces)
+    remap = -np.ones(len(verts), np.int64)
+    remap[used] = np.arange(len(used))
+    return verts[used], remap[faces]
+
+
 def robust_fuse(X, per_view, meta, res, h, tau, inlier):
     """Weighted median of the views' truncated distances, then the weighted
     mean of the views within `inlier` voxels of it. Returns D (voxels, -tau
@@ -283,6 +338,12 @@ def main():
                          "voxels there defaulted to solid, and the boundary of "
                          "that silence meshed as crumbs: under Lucy's right ear "
                          "F@1 77.7 -> 86.3, loose pieces 35 -> 18")
+    ap.add_argument("--shell", action="store_true",
+                    help="outer_shell() before meshing: one closed outer "
+                         "surface, no loose pieces or sealed pockets")
+    ap.add_argument("--shell-keep", type=float, default=0.01,
+                    help="solid pieces smaller than this fraction of the "
+                         "largest are dropped")
     ap.add_argument("--speckle-px", type=int, default=30,
                     help="depth pieces smaller than this abstain (drop_specks); "
                          "0 keeps them")
@@ -463,6 +524,11 @@ def main():
     if args.smooth > 0:
         F = ndimage.gaussian_filter(F, args.smooth, truncate=3.0)
 
+    if args.shell:
+        F, nd, ns, nf = outer_shell(F, float(args.trunc), args.shell_keep)
+        print(f"outer shell: dropped {nd} loose pieces, filled {ns} sealed "
+              f"pockets ({nf:,} voxels)", flush=True)
+
     if args.no_mesh:
         np.save(args.out + "_field.npy", F.astype(np.float16))
         print(f"wrote {args.out}_field.npy  {time.time()-t0:.0f}s")
@@ -477,6 +543,8 @@ def main():
                                                 spacing=(h, h, h))
     verts += lo + 0.5 * h - h      # voxel centres, undo the pad
     faces = faces[:, ::-1]         # outward-facing for a field positive outside
+    if args.shell:
+        verts, faces = largest_pieces(verts, faces, args.shell_keep)
     write_ply(args.out + ".ply", verts.astype(np.float32),
               faces.astype(np.int32))
     print(f"wrote {args.out}.ply  {len(faces):,} faces  inside "

@@ -173,7 +173,7 @@ def main():
     t0 = time.time()
     mesh = os.path.join(rec, "mesh")
     if a.passes == 1 and not a.joint:
-        fuse(depth, mesh)
+        fuse(depth, mesh, ["--shell"])
     elif not fused:
         grid = os.path.join(hull, "grid.npz")
         prev = depth
@@ -214,7 +214,7 @@ def main():
             T[f"pass{k}"] = time.time() - t0
             t0 = time.time()
             prev = dk
-        fuse(prev, mesh, clamp)
+        fuse(prev, mesh, clamp + ["--shell"])
     T["fuse"] = time.time() - t0
     if a.stop_after == "fuse":
         print("timings: " + "  ".join(f"{k} {v/60:.1f}min" for k, v in T.items()))
