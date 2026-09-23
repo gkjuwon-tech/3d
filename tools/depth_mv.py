@@ -204,8 +204,10 @@ def main():
     ap.add_argument("--budget", type=float, default=5.0)
     ap.add_argument("--nz-floor", type=float, default=0.15)
     ap.add_argument("--irls", type=int, default=10)
-    ap.add_argument("--relief-scale", type=int, default=1,
-                    help="integrate the relief on k x k blocks (1 = full res)")
+    ap.add_argument("--relief-scale", type=int, default=2,
+                    help="integrate the relief on k x k blocks (1 = full res). "
+                         "2 is the confirmed setting: same accuracy, 4x fewer "
+                         "unknowns")
     ap.add_argument("--sigma", type=float, default=2e-4)
     ap.add_argument("--range-front", type=float, default=20.0,
                     help="voxels swept toward the camera from the local centre")

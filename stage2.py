@@ -19,8 +19,15 @@ Reads only data/<name>/views/{mask,rgb,cameras.json} and data/<name>/normals.
 Every step is skipped when its output already exists, so an interrupted run
 resumes where it stopped; --force redoes everything.
 
+Confirmed version (v3). On Lucy, 14 views of 2048^2:
+  GPU, 2x T4    5.0 min  (hull 0.7, depth 3.9, fuse 0.4)
+  CPU, 4 cores  about 30 min
+  Chamfer 0.00169, F@1 72.7%, normal median 8.1 deg
+
 Run:
-  python3 stage2.py --name bunny --gt-mesh assets/bunny.ply
+  python3 stage2.py --name bunny --gpu              # on a CUDA machine
+  python3 stage2.py --name bunny                    # CPU
+  python3 stage2.py --name bunny --gt-mesh assets/bunny.ply   # and score it
 """
 import argparse
 import json
@@ -58,13 +65,18 @@ def main():
     ap.add_argument("--gt-mesh", default=None, help="score against this mesh")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--quads", type=int, default=40000)
-    ap.add_argument("--relief-scale", type=int, default=1,
+    ap.add_argument("--relief-scale", type=int, default=2,
                     help="passed to depth_mv: integrate the relief on k x k "
                          "blocks (2 = at 1024 for 2048 images)")
+    ap.add_argument("--gpu", action="store_true",
+                    help="run every step on an NVIDIA GPU through CuPy "
+                         "(same code, same results; THREED_GPU=1 does the same)")
     ap.add_argument("--stop-after", default=None, choices=["hull", "depth", "fuse"],
                     help="end early, e.g. on a machine without Blender")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
+    if a.gpu:
+        os.environ["THREED_GPU"] = "1"   # inherited by every step below
 
     d = os.path.join(a.data, a.name)
     views = a.views or os.path.join(d, "views")

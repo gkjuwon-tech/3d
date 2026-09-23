@@ -43,3 +43,11 @@ Candidate fixes, to be measured before any is adopted:
 3. a thin-structure guard like S2's, on the continuous field
 
 Deferred: speed first (see docs/SPEED.md when written), with quality held.
+
+## Floating debris in the fused mesh (open)
+
+The confirmed v3 Lucy mesh has 2,771 disconnected pieces; the small ones add
+up to 76,146 of its 3,884,286 faces. Retopology drops them, but the raw mesh
+carries them. Likely the same mechanism as the holes -- a view's wrong depth
+leaving a sliver on the wrong side of the surface -- so it should be looked at
+together with them.
