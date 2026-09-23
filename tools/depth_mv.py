@@ -354,6 +354,9 @@ def main():
                          "(consensus.py), added as anchors")
     ap.add_argument("--consensus-w", type=float, default=1.0,
                     help="weight of a consensus anchor relative to a sweep one")
+    ap.add_argument("--no-final-cost", dest="final_cost", action="store_false",
+                    help="skip <view>_fcost.npy (cross-view normal cost at "
+                         "the final depth, fuse_field's view weight)")
     ap.add_argument("--save-pass1", action="store_true",
                     help="save relief and sweep depth for a later --pass1")
     args = ap.parse_args()
@@ -362,7 +365,7 @@ def main():
     views = args.only_views.split(",") if args.only_views else list(meta["views"])
     os.makedirs(args.out, exist_ok=True)
     nB, hitB = {}, {}
-    for s in ([] if args.pass1 else meta["views"]):
+    for s in ([] if args.pass1 and not args.final_cost else meta["views"]):
         nB[s] = ns.world_normals(args.views, args.normals_dir, s, meta)
         hb = np.load(os.path.join(args.hull_views, "depth_npy", f"{s}.npy"))
         hitB[s] = hb < BG
@@ -372,6 +375,20 @@ def main():
         np.save(os.path.join(args.out, f"{v}.npy"), z)
         np.save(os.path.join(args.out, f"{v}_anchordist.npy"), dist)
         np.save(os.path.join(args.out, f"{v}_cost.npy"), cost)
+        if args.final_cost:
+            # how well the other views' normals agree with this view's FINAL
+            # depth -- the same score the sweep minimises, at the answer
+            # rather than at the sweep's guess. Where two views disagree
+            # about a surface, this is what tells which one is right:
+            # under Lucy's right ear it separates right from wrong depths
+            # with AUC 0.83, against 0.55 for the anchor-distance weight
+            # fuse_field used alone (fuse_field --fcost-s).
+            hit = np.isfinite(z)
+            _, fc = ns.sweep_fast(meta, v, [s for s in nB if s != v], nB[v], nB,
+                                  hitB, z, z, hit, 0.0, 0.0, 1.0, 1.0, args.win,
+                                  fixed=True, trunc=args.sweep_trunc)
+            fc = np.where(hit & np.isfinite(fc), fc, np.nan)
+            np.save(os.path.join(args.out, f"{v}_fcost.npy"), fc.astype(np.float16))
         if args.save_pass1:
             np.save(os.path.join(args.out, f"{v}_sweep.npy"), z_st)
             np.save(os.path.join(args.out, f"{v}_relief.npy"),

@@ -249,13 +249,23 @@ def robust_fuse(X, per_view, meta, res, h, tau, inlier):
         W = xp.empty((V, n), dtype=xp.float32)      # median weight
         Wd = xp.empty((V, n), dtype=xp.float32)     # mean weight (TSDF ramp)
         A = xp.empty((V, n), dtype=xp.uint8)
-        for k, (dg, cg_, anc, right, up_, back, loc) in enumerate(per_view):
+        for k, (dg, cg_, anc, right, up_, back, loc, span) in enumerate(per_view):
             Xg = Xc - loc
             col = (Xg @ right / o + 0.5) * res - 0.5
             row = (0.5 - Xg @ up_ / o) * res - 0.5
             w = -(Xg @ back)
             rc = xp.stack([row, col])
             s = (ndi.map_coordinates(dg, rc, order=1, mode="nearest") - w) / h
+            # Across a depth jump the bilinear blend of a foreground and a
+            # background depth is a surface that exists in neither: a sliver
+            # of solid floating in the gap, stretched along the ray -- the
+            # rods still left under Lucy's ear even when only views with the
+            # right depth were fused. There, the nearest pixel's depth.
+            if span is not None:
+                fl = xp.stack([xp.floor(row), xp.floor(col)])
+                jmp = ndi.map_coordinates(span, fl, order=0, mode="nearest") > 0
+                sn = (ndi.map_coordinates(dg, rc, order=0, mode="nearest") - w) / h
+                s = xp.where(jmp, sn, s)
             c = ndi.map_coordinates(cg_, rc, order=0, mode="nearest")
             A[k] = ndi.map_coordinates(anc, rc, order=0, mode="nearest")
             ok = (s > -tau) & (c > 0)
@@ -344,6 +354,14 @@ def main():
     ap.add_argument("--shell-keep", type=float, default=0.01,
                     help="solid pieces smaller than this fraction of the "
                          "largest are dropped")
+    ap.add_argument("--no-jump-nearest", dest="jump_nearest", action="store_false",
+                    help="interpolate depth bilinearly even across a jump")
+    ap.add_argument("--fcost-c0", type=float, default=0.012,
+                    help="cross-view normal cost (depth_mv <view>_fcost.npy) up "
+                         "to which a view keeps full weight")
+    ap.add_argument("--fcost-s", type=float, default=0.002,
+                    help="weight falls as exp(-(cost - c0) / this) above it; 0 "
+                         "ignores the cost")
     ap.add_argument("--speckle-px", type=int, default=30,
                     help="depth pieces smaller than this abstain (drop_specks); "
                          "0 keeps them")
@@ -449,6 +467,11 @@ def main():
                 nzv = np.abs(np.load(os.path.join(args.normals_dir, f"{v}.npy"))
                              [..., 2]).astype(np.float32)
                 conf = conf * nzv
+            fcp = os.path.join(args.depth_dir, f"{v}_fcost.npy")
+            if args.fcost_s > 0 and os.path.exists(fcp):
+                fc = np.load(fcp).astype(np.float32)
+                fc = np.where(np.isfinite(fc), fc, args.fcost_c0)   # no evidence: neutral
+                conf = conf * np.exp(-np.maximum(fc - args.fcost_c0, 0) / args.fcost_s)
             if args.edge_len > 0:
                 # depth is least reliable next to its own jumps: measured on
                 # Lucy, 44% of pixels within 2 px of one are right to 1.5
@@ -477,7 +500,14 @@ def main():
                     np.zeros_like(d)
                 anc = xp.asarray((np.nan_to_num(ad, nan=1e9)
                                   <= args.support_px).astype(np.uint8))
-                per_view.append((dg, cg_, anc, right, up_, back, loc))
+                span = None
+                if args.jump_nearest:
+                    q = np.stack([dfill[:-1, :-1], dfill[1:, :-1],
+                                  dfill[:-1, 1:], dfill[1:, 1:]])
+                    sp = np.zeros(d.shape, np.uint8)
+                    sp[:-1, :-1] = (q.max(0) - q.min(0)) > args.edge_vox * h
+                    span = xp.asarray(sp)
+                per_view.append((dg, cg_, anc, right, up_, back, loc, span))
                 continue
             for j0 in range(0, len(X), CHUNK):
                 j1 = min(j0 + CHUNK, len(X))
