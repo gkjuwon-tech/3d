@@ -90,6 +90,36 @@ def anchored_solve(a, b, grad, w_edge, N, hull_p, px, anc_idx, anc_z, anc_w,
     return z, we, wa
 
 
+def coarse_relief(hull, n, rgb, hit, px, args):
+    """The relief at 1/k resolution, brought back up.
+
+    The relief only has to give the sweep the local shape inside its 11-pixel
+    window; the final depth is re-solved at full resolution against the
+    anchors. So it is integrated on k x k blocks -- normals averaged and
+    renormalised, a block counting as hit when any of its pixels does -- with
+    k^2 fewer unknowns, then upsampled bilinearly.
+    """
+    k = args.relief_scale
+    H, W = hit.shape
+    h2, w2 = H // k, W // k
+    nb = n[:h2 * k, :w2 * k].reshape(h2, k, w2, k, 3).mean((1, 3))
+    nb /= np.linalg.norm(nb, axis=2, keepdims=True).clip(1e-9)
+    hb = hull[:h2 * k, :w2 * k].reshape(h2, k, w2, k)
+    hitb = np.isfinite(hb).any((1, 3))
+    hullb = np.where(hitb, np.nanmin(np.where(np.isfinite(hb), hb, np.inf),
+                                     axis=(1, 3)), np.nan)
+    rgbb = rgb[:h2 * k, :w2 * k].reshape(h2, k, w2, k).mean((1, 3))
+    keepb = dcx.cut_edges(nb, rgbb, hullb, hitb, args.budget)
+    rb, _, _ = dcx.integrate(hullb, nb, hitb, keepb, px * k, args.nz_floor,
+                             args.irls, args.sigma * k)
+    filled = np.where(hitb, rb, np.nanmean(rb[hitb]))
+    rows = (np.arange(H) + 0.5) / k - 0.5
+    cols = (np.arange(W) + 0.5) / k - 0.5
+    up = ndimage.map_coordinates(filled, np.meshgrid(rows, cols, indexing="ij"),
+                                 order=1, mode="nearest")
+    return np.where(hit, up, np.nan)
+
+
 def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
     t0 = time.time()
     hull, n, rgb = dcx.load(views_dir, hull_dir, normals_dir, view, meta)
@@ -98,8 +128,11 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
     keep = dcx.cut_edges(n, rgb, hull, hit, args.budget)
 
     # 1. relief
-    relief, _, _ = dcx.integrate(hull, n, hit, keep, px, args.nz_floor,
-                                 args.irls, args.sigma)
+    if args.relief_scale > 1:
+        relief = coarse_relief(hull, n, rgb, hit, px, args)
+    else:
+        relief, _, _ = dcx.integrate(hull, n, hit, keep, px, args.nz_floor,
+                                     args.irls, args.sigma)
     t1 = time.time()
 
     # 2. anchors by normal-field sweep. The sweep has to be centred close to
@@ -171,6 +204,8 @@ def main():
     ap.add_argument("--budget", type=float, default=5.0)
     ap.add_argument("--nz-floor", type=float, default=0.15)
     ap.add_argument("--irls", type=int, default=10)
+    ap.add_argument("--relief-scale", type=int, default=1,
+                    help="integrate the relief on k x k blocks (1 = full res)")
     ap.add_argument("--sigma", type=float, default=2e-4)
     ap.add_argument("--range-front", type=float, default=20.0,
                     help="voxels swept toward the camera from the local centre")
