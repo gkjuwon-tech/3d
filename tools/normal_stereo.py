@@ -138,7 +138,7 @@ def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
     for s in sources:
         right, up, back, loc, _ = cam(meta, s)
         facing = nAp @ xp.asarray(back.astype(np.float32)) > facing_min
-        if float(facing.mean()) < 1e-3:
+        if float(facing.astype(xp.float32).mean()) < 1e-3:
             continue                       # sees none of this view's surface
         srcs.append((xp.asarray(right.astype(np.float32)),
                      xp.asarray(up.astype(np.float32)),

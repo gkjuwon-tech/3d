@@ -31,5 +31,8 @@ def spd_solve(A, b, x0=None, tol=1e-6, maxiter_amg=400, maxiter_cg=30000):
     dinv = 1.0 / Ag.diagonal()
     M = cla.LinearOperator(A.shape, matvec=lambda x: dinv * x, dtype=cp.float64)
     x0g = None if x0 is None else cp.asarray(x0, dtype=cp.float64)
-    x, _ = cla.cg(Ag, bg, x0=x0g, tol=tol, maxiter=maxiter_cg, M=M)
+    # CuPy followed SciPy in renaming tol to rtol; accept either version
+    import inspect
+    key = "rtol" if "rtol" in inspect.signature(cla.cg).parameters else "tol"
+    x, _ = cla.cg(Ag, bg, x0=x0g, maxiter=maxiter_cg, M=M, **{key: tol})
     return cpu(x)
