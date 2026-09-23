@@ -47,6 +47,9 @@ def parse_args():
                    help="do not re-normalise the mesh to its own bounding box; "
                         "a reconstruction's box differs slightly from the "
                         "ground truth's, which would shift every close-up")
+    p.add_argument("--wire", action="store_true",
+                   help="overlay the mesh's edges, to show its topology")
+    p.add_argument("--wire-width", type=float, default=0.0006)
     p.add_argument("--shots", default=None,
                    help="name:az:el:lens,... replacing the default four")
     return p.parse_args(argv)
@@ -136,6 +139,23 @@ def main():
         b.inputs["Specular IOR Level"].default_value = 0.3
     obj.data.materials.clear()
     obj.data.materials.append(mat)
+
+    if args.wire:
+        # a second copy reduced to its edges, drawn dark over the plaster
+        wire = obj.copy()
+        wire.data = obj.data.copy()
+        bpy.context.scene.collection.objects.link(wire)
+        m = wire.modifiers.new("wire", "WIREFRAME")
+        m.thickness = args.wire_width
+        m.use_replace = True
+        m.use_even_offset = False
+        wm = bpy.data.materials.new("ink")
+        wm.use_nodes = True
+        wb = wm.node_tree.nodes["Principled BSDF"]
+        wb.inputs["Base Color"].default_value = (0.02, 0.05, 0.12, 1.0)
+        wb.inputs["Roughness"].default_value = 0.9
+        wire.data.materials.clear()
+        wire.data.materials.append(wm)
 
     world = bpy.data.worlds.new("studio")
     world.use_nodes = True
