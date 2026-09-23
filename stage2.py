@@ -9,7 +9,16 @@ Reads only data/<name>/views/{mask,rgb,cameras.json} and data/<name>/normals.
               matching normals across the other 13 views, re-solved against
               those anchors (tools/depth_mv.py), several views at a time
   3. fuse     hull field and depth maps fused into one continuous signed
-              distance and meshed at its zero level (tools/fuse_field.py)
+              distance -- a robust one: weighted median over the views, then
+              the mean of those that agree -- and meshed at its zero level
+              (tools/fuse_field.py)
+  3b. pass 2  (--passes 2, the default) where two or more anchored views
+              agree in that fusion, the surface is rendered back into every
+              view as extra anchors (tools/consensus.py), each view's depth
+              is re-solved against them (depth_mv.py --pass1, solve only),
+              and the result is fused again. A view's depth is only right
+              near its anchors; this gives it the anchors the other views
+              found.
   4. retopo   QuadriFlow quad base plus a subdivided, shrink-wrapped quad
               mesh carrying the detail (tools/retopo.py)
   5. score    only if --gt-mesh is given: Chamfer, containment, volume,
@@ -73,6 +82,9 @@ def main():
                          "(same code, same results; THREED_GPU=1 does the same)")
     ap.add_argument("--stop-after", default=None, choices=["hull", "depth", "fuse"],
                     help="end early, e.g. on a machine without Blender")
+    ap.add_argument("--passes", type=int, default=2, choices=[1, 2],
+                    help="2: re-solve every view against the surface the "
+                         "others agreed on in the first fusion, and fuse again")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
     if a.gpu:
@@ -104,10 +116,6 @@ def main():
         return
 
     # 2. depth, several views at once ------------------------------------------
-    t0 = time.time()
-    todo = [] if fused else [v for v in names if a.force or
-                             not os.path.exists(os.path.join(depth, f"{v}_cost.npy"))]
-    chunks = [todo[i::a.workers] for i in range(a.workers)]
     # on a multi-GPU machine each worker gets a device of its own; sharing
     # one serialises their solves
     ngpu = 0
@@ -117,33 +125,63 @@ def main():
                                       text=True).stdout.strip().splitlines())
         except OSError:
             ngpu = 0
-    procs = []
-    for i, c in enumerate(chunks):
-        if not c:
-            continue
-        env = dict(os.environ)
-        if ngpu > 1:
-            env["CUDA_VISIBLE_DEVICES"] = str(i % ngpu)
-        procs.append(run([PY, tool("depth_mv.py"), "--views", views,
-                          "--hull-views", os.path.join(hull, "views"),
-                          "--normals-dir", normals, "--out", depth,
-                          "--relief-scale", str(a.relief_scale),
-                          "--only-views", ",".join(c)], log, parallel=True,
-                         env=env))
-    for p in procs:
-        if p.wait():
-            sys.exit(f"depth worker failed; see {log}")
+
+    def depth_pass(out, extra):
+        os.makedirs(out, exist_ok=True)
+        todo = [] if fused else [v for v in names if a.force or
+                                 not os.path.exists(os.path.join(out, f"{v}_cost.npy"))]
+        chunks = [todo[i::a.workers] for i in range(a.workers)]
+        procs = []
+        for i, c in enumerate(chunks):
+            if not c:
+                continue
+            env = dict(os.environ)
+            if ngpu > 1:
+                env["CUDA_VISIBLE_DEVICES"] = str(i % ngpu)
+            procs.append(run([PY, tool("depth_mv.py"), "--views", views,
+                              "--hull-views", os.path.join(hull, "views"),
+                              "--normals-dir", normals, "--out", out,
+                              "--relief-scale", str(a.relief_scale),
+                              "--only-views", ",".join(c)] + extra, log,
+                             parallel=True, env=env))
+        for p in procs:
+            if p.wait():
+                sys.exit(f"depth worker failed; see {log}")
+
+    def fuse(depth_dir, out, extra=()):
+        if a.force or not os.path.exists(out + ".ply"):
+            run([PY, tool("fuse_field.py"), "--occ", os.path.join(hull, "grid.npz"),
+                 "--views", views, "--depth-dir", depth_dir, "--normals-dir", normals,
+                 "--hull-cache", os.path.join(hull, "H.npy"), "--out", out]
+                + list(extra), log)
+
+    t0 = time.time()
+    depth_pass(depth, ["--save-pass1"] if a.passes == 2 else [])
     T["depth"] = time.time() - t0
     if a.stop_after == "depth":
         return
 
-    # 3. fuse -----------------------------------------------------------------
+    # 3. fuse (and the second pass) ---------------------------------------------
     t0 = time.time()
     mesh = os.path.join(rec, "mesh")
-    if a.force or not os.path.exists(mesh + ".ply"):
-        run([PY, tool("fuse_field.py"), "--occ", os.path.join(hull, "grid.npz"),
-             "--views", views, "--depth-dir", depth, "--normals-dir", normals,
-             "--hull-cache", os.path.join(hull, "H.npy"), "--out", mesh], log)
+    if a.passes == 1:
+        fuse(depth, mesh)
+    elif not fused:
+        f1 = os.path.join(rec, "fuse1")
+        fuse(depth, f1, ["--support-out", f1 + "_support.npy"])
+        T["fuse1"] = time.time() - t0
+        t0 = time.time()
+        cons = os.path.join(rec, "consensus")
+        if a.force or not os.path.exists(os.path.join(cons, f"{names[-1]}.npy")):
+            run([PY, tool("consensus.py"), "--field", f1 + "_field.npy",
+                 "--support", f1 + "_support.npy", "--grid", f1 + "_occ.npz",
+                 "--views", views, "--hull-views", os.path.join(hull, "views"),
+                 "--out", cons], log)
+        depth2 = os.path.join(rec, "depth2")
+        depth_pass(depth2, ["--pass1", depth, "--consensus", cons])
+        T["pass2"] = time.time() - t0
+        t0 = time.time()
+        fuse(depth2, mesh)
     T["fuse"] = time.time() - t0
     if a.stop_after == "fuse":
         print("timings: " + "  ".join(f"{k} {v/60:.1f}min" for k, v in T.items()))

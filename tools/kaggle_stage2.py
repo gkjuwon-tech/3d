@@ -120,14 +120,18 @@ print("stage2 exit", r.returncode, "minutes", (time.time() - t0) / 60)
 rec = d + "/recon"
 out = W + "/out"
 os.makedirs(out, exist_ok=True)
-for rel in ["stage2.log", "mesh.ply", "mesh_occ.npz", "hull/hull.ply", "hull/grid.npz"]:
+for rel in ["stage2.log", "mesh.ply", "mesh_occ.npz", "mesh_field.npy", "fuse1.ply",
+            "hull/hull.ply", "hull/grid.npz"]:
     p = os.path.join(rec, rel)
     if os.path.exists(p):
         shutil.copy(p, os.path.join(out, rel.replace("/", "__")))
 import numpy as np
-for f in os.listdir(rec + "/depth"):
+final = "depth2" if os.path.isdir(rec + "/depth2") else "depth"
+for f in os.listdir(rec + "/" + final):
+    if f.endswith(("_relief.npy", "_sweep.npy")):
+        continue                      # first-pass internals, large
     if f.endswith(".npy") and "_" in f:
-        a = np.load(os.path.join(rec, "depth", f))
+        a = np.load(os.path.join(rec, final, f))
         # depth itself must stay float32: values sit near 2.0, where float16's
         # spacing is 2^-9, about two voxels, and a re-fusion of float16 depth
         # comes out terraced (normal median 13.8 deg against 7.2)

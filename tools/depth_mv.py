@@ -20,6 +20,16 @@ Three stages per view:
 Pieces that no anchor reaches are left where the weak pull toward the hull
 puts them -- in front of the truth, which carves less, never more.
 
+A second pass (--pass1, --consensus) re-solves stage 3 only, with more
+anchors: surface points where at least two anchored views agree in the
+robust fusion of the first pass, rendered into this view by consensus.py.
+Measured on Lucy, a view's depth is right to 1.5 voxels on 97.6% of pixels
+within 2 px of one of its own anchors but only 39% at 10-40 px, and only
+half the surface lies near an anchor of any view -- so where another view
+has pinned the surface, this one should be pinned there too. It is the
+geometric-consistency pass of multi-view stereo (Schoenberger et al. 2016)
+in the form this pipeline can use: other views' agreed depths as anchors.
+
 Run:
   python3 tools/depth_mv.py --views refs/lucy_gt --hull-views out/final_views \
       --normals-dir out/ps_normals --out out/depth_mv
@@ -170,6 +180,15 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
     hit = np.isfinite(hull)
     px = meta["ortho_scale"] / hull.shape[0]
     keep = dcx.cut_edges(n, rgb, hull, hit, args.budget)
+    if args.pass1:
+        # second pass: relief and sweep as the first pass left them
+        P = lambda k: os.path.join(args.pass1, f"{view}_{k}.npy")  # noqa: E731
+        relief = np.load(P("relief")).astype(np.float64)
+        z_st = np.load(P("sweep")).astype(np.float64)
+        best = np.nan_to_num(np.load(P("cost")).astype(np.float32), nan=np.inf)
+        t1 = t2 = time.time()
+        return finish(view, hull, n, hit, keep, px, relief, z_st, best, args,
+                      t0, t1, t2)
 
     # 1. relief
     if args.relief_scale > 1:
@@ -209,7 +228,11 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
         del cost
         z_st = relief + off
     t2 = time.time()
+    return finish(view, hull, n, hit, keep, px, relief, z_st, best, args,
+                  t0, t1, t2)
 
+
+def finish(view, hull, n, hit, keep, px, relief, z_st, best, args, t0, t1, t2):
     # 3. anchored robust solve
     a, b, grad, idx = dcx.build_edges(n, hit, keep, px, args.nz_floor)
     N = int(hit.sum())
@@ -218,6 +241,20 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
     anc_idx = idx[anc]
     anc_z = z_st[anc]
     anc_w = np.full(len(anc_idx), (1.0 / px ** 2) / args.anchor_len ** 2)
+    n_cons = 0
+    if args.consensus:
+        # other views' agreed surface, as further anchors. Where this view
+        # has its own anchor too, both go in and the robust reweighting
+        # below keeps whichever the relief and the neighbours agree with.
+        zc = np.load(os.path.join(args.consensus, f"{view}.npy"))
+        cm = hit & np.isfinite(zc) & (zc >= hull - 1e-6)
+        n_cons = int(cm.sum())
+        anc = anc | cm
+        anc_idx = np.concatenate([anc_idx, idx[cm]])
+        anc_z = np.concatenate([anc_z, zc[cm]])
+        anc_w = np.concatenate([anc_w, np.full(n_cons, anc_w[0] if len(anc_w)
+                                               else (1.0 / px ** 2) / args.anchor_len ** 2)
+                                * args.consensus_w])
     if args.anchor_soft > 0:
         # graded rather than thresholded: a thin feature's window straddles
         # its outline, so even its right answer scores a middling cost, and a
@@ -242,14 +279,16 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
 
     # confidence: distance (in pixels) to the nearest surviving anchor
     live = np.zeros(hit.shape, bool)
-    ar, ac = np.nonzero(anc)          # same row-major order as idx[anc]
-    live[ar[kept], ac[kept]] = True
+    hr, hc = np.nonzero(hit)          # idx numbers hit pixels row-major
+    live[hr[anc_idx[kept]], hc[anc_idx[kept]]] = True
     dist = ndimage.distance_transform_edt(~live).astype(np.float32)
     dist[~hit] = np.nan
     t3 = time.time()
+    if n_cons:
+        orphan_note += f"  consensus anchors {n_cons:,}"
     return out.astype(np.float32), dist, best.astype(np.float32), \
         z_st.astype(np.float32), (t1 - t0, t2 - t1, t3 - t2), anc.sum(), \
-        int((wa > 0.5 * anc_w).sum()), orphan_note
+        int((wa > 0.5 * anc_w).sum()), orphan_note, relief
 
 
 def main():
@@ -294,22 +333,36 @@ def main():
                     help="robust edge weight below which an edge separates pieces")
     ap.add_argument("--orphan-q", type=float, default=99.5)
     ap.add_argument("--only-views", default=None)
+    ap.add_argument("--pass1", default=None,
+                    help="second pass: reuse relief, sweep and cost saved by "
+                         "the first pass in this directory; re-solve only")
+    ap.add_argument("--consensus", default=None,
+                    help="directory of <view>.npy consensus depths "
+                         "(consensus.py), added as anchors")
+    ap.add_argument("--consensus-w", type=float, default=1.0,
+                    help="weight of a consensus anchor relative to a sweep one")
+    ap.add_argument("--save-pass1", action="store_true",
+                    help="save relief and sweep depth for a later --pass1")
     args = ap.parse_args()
 
     meta = json.load(open(os.path.join(args.views, "cameras.json")))
     views = args.only_views.split(",") if args.only_views else list(meta["views"])
     os.makedirs(args.out, exist_ok=True)
     nB, hitB = {}, {}
-    for s in meta["views"]:
+    for s in ([] if args.pass1 else meta["views"]):
         nB[s] = ns.world_normals(args.views, args.normals_dir, s, meta)
         hb = np.load(os.path.join(args.hull_views, "depth_npy", f"{s}.npy"))
         hitB[s] = hb < BG
     for v in views:
-        z, dist, cost, z_st, tt, n_anc, n_live, orphan_note = process(
+        z, dist, cost, z_st, tt, n_anc, n_live, orphan_note, relief = process(
             args.views, args.hull_views, args.normals_dir, v, meta, args, nB, hitB)
         np.save(os.path.join(args.out, f"{v}.npy"), z)
         np.save(os.path.join(args.out, f"{v}_anchordist.npy"), dist)
         np.save(os.path.join(args.out, f"{v}_cost.npy"), cost)
+        if args.save_pass1:
+            np.save(os.path.join(args.out, f"{v}_sweep.npy"), z_st)
+            np.save(os.path.join(args.out, f"{v}_relief.npy"),
+                    relief.astype(np.float32))
         note = ""
         gt_path = os.path.join(args.views, "depth_npy", f"{v}.npy")
         if os.path.exists(gt_path):

@@ -21,6 +21,23 @@ distances that are positive outside):
       truncation band. Samples are averaged with weights for how well anchored
       that pixel's depth is and how squarely the view faces the surface.
 
+How D is formed matters more than anything else here. A weighted *mean*
+(--fusion mean, the original) loses to one wrong view: at a true surface
+point every view that got it right says s = 0, which pulls on the mean not
+at all, so a single view whose depth landed too deep -- saying "empty" at
+full weight -- moves the surface inward on its own. That, measured on Lucy,
+was what punched the holes: 72% of hole points were emptied by one view
+that saw the point and put it too deep. --fusion robust (the default) takes
+the weighted median of the views' truncated distances and then averages
+only the views within one voxel of it, so a minority cannot carve through
+what the others agree on, and the agreeing views still average their noise
+away. Holes on Lucy: 6.71% -> 4.75% of the surface (face 5.75 -> 1.38,
+hand 48.0 -> 19.8), from the same depth maps.
+
+It also counts, per voxel, how many *anchored* views are among those that
+agree (--support-out): the input to the second, cross-view depth pass in
+consensus.py.
+
 F = max(H, D) where some view has an opinion, H elsewhere; marching cubes at
 level zero then places vertices between voxel centres by linear interpolation
 of a field that really is linear there.
@@ -119,6 +136,56 @@ def geodesic_anchor_dist(d, anchordist_path, h, jump_vox, limit):
     return out
 
 
+def robust_fuse(X, per_view, meta, res, h, tau, inlier):
+    """Weighted median of the views' truncated distances, then the weighted
+    mean of the views within `inlier` voxels of it. Returns D (voxels, -tau
+    where no view has an opinion) and, per voxel, the number of agreeing
+    views that are anchored at the pixel they see it through.
+
+    Voxels are processed in chunks with every view resident at once, so the
+    median sees all fourteen samples of a voxel together.
+    """
+    V = len(per_view)
+    o = meta["ortho_scale"]
+    D = np.empty(len(X), dtype=np.float32)
+    sup = np.empty(len(X), dtype=np.uint8)
+    chunk = max(CHUNK // (4 * V), 100_000)
+    for j0 in range(0, len(X), chunk):
+        j1 = min(j0 + chunk, len(X))
+        Xc = xp.asarray(X[j0:j1])
+        n = j1 - j0
+        S = xp.empty((V, n), dtype=xp.float32)
+        W = xp.empty((V, n), dtype=xp.float32)      # median weight
+        Wd = xp.empty((V, n), dtype=xp.float32)     # mean weight (TSDF ramp)
+        A = xp.empty((V, n), dtype=xp.uint8)
+        for k, (dg, cg_, anc, right, up_, back, loc) in enumerate(per_view):
+            Xg = Xc - loc
+            col = (Xg @ right / o + 0.5) * res - 0.5
+            row = (0.5 - Xg @ up_ / o) * res - 0.5
+            w = -(Xg @ back)
+            rc = xp.stack([row, col])
+            s = (ndi.map_coordinates(dg, rc, order=1, mode="nearest") - w) / h
+            c = ndi.map_coordinates(cg_, rc, order=0, mode="nearest")
+            A[k] = ndi.map_coordinates(anc, rc, order=0, mode="nearest")
+            ok = (s > -tau) & (c > 0)
+            S[k] = xp.clip(s, -tau, tau)
+            W[k] = xp.where(ok, c, 0)
+            Wd[k] = xp.where(ok, c * xp.where(s < 0, 1 + s / tau, 1.0), 0)
+        order = xp.argsort(xp.where(W > 0, S, xp.inf), axis=0)
+        Ss = xp.take_along_axis(S, order, 0)
+        cw = xp.cumsum(xp.take_along_axis(W, order, 0), 0)
+        tot = cw[-1]
+        km = xp.clip((cw < 0.5 * tot).sum(0), 0, V - 1)
+        med = xp.take_along_axis(Ss, km[None], 0)[0]
+        inl = (xp.abs(S - med) <= inlier) & (Wd > 0)
+        d2 = (Wd * inl).sum(0)
+        Dc = xp.where(d2 > 1e-6, (Wd * inl * S).sum(0) / xp.maximum(d2, 1e-12),
+                      med)
+        D[j0:j1] = cpu(xp.where(tot > 1e-6, Dc, -tau))
+        sup[j0:j1] = cpu((inl & (A > 0)).sum(0).astype(xp.uint8))
+    return D, sup
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--occ", required=True, help="grid definition (and a hull "
@@ -157,6 +224,17 @@ def main():
                     help="voxels added outward to H")
     ap.add_argument("--smooth", type=float, default=0.0,
                     help="gaussian sigma in voxels on the final field")
+    ap.add_argument("--fusion", default="robust", choices=["robust", "mean"],
+                    help="robust: weighted median, then the mean of the views "
+                         "within --inlier voxels of it; mean: the original")
+    ap.add_argument("--inlier", type=float, default=1.0,
+                    help="voxels; views this close to the median are averaged")
+    ap.add_argument("--support-out", default=None,
+                    help="write per-voxel count of agreeing anchored views "
+                         "(uint8) here, for consensus.py")
+    ap.add_argument("--support-px", type=float, default=2.0,
+                    help="a view counts as anchored at a pixel this close to "
+                         "one of its live anchors")
     ap.add_argument("--band", type=float, default=2.0,
                     help="voxels outside the hull still fused (anti-alias)")
     args = ap.parse_args()
@@ -217,6 +295,7 @@ def main():
             den_n = np.zeros(len(X), dtype=np.float32)
             n_pos = np.zeros(len(X), dtype=np.int16)     # views calling it empty
         tau = args.trunc
+        per_view = []
         for v in views:
             d = np.load(os.path.join(args.depth_dir, f"{v}.npy"))
             hitv = np.isfinite(d)
@@ -248,6 +327,13 @@ def main():
             right, up_, back, loc = (xp.asarray(q, dtype=xp.float32)
                                      for q in cam(meta, v))
             o = meta["ortho_scale"]
+            if args.fusion == "robust":
+                ad = np.load(dist_p) if os.path.exists(dist_p) else \
+                    np.zeros_like(d)
+                anc = xp.asarray((np.nan_to_num(ad, nan=1e9)
+                                  <= args.support_px).astype(np.uint8))
+                per_view.append((dg, cg_, anc, right, up_, back, loc))
+                continue
             for j0 in range(0, len(X), CHUNK):
                 j1 = min(j0 + CHUNK, len(X))
                 Xg = xp.asarray(X[j0:j1]) - loc
@@ -268,8 +354,19 @@ def main():
                     n_pos[j0:j1] += cpu((wt > 0) & (s > args.empty_vox)).astype(np.int16)
             del dg, cg_
             print(f"  {v}: {time.time()-t0:.0f}s", flush=True)
-        seen = den > 1e-6
-        D = np.where(seen, num / np.maximum(den, 1e-12), -tau).astype(np.float32)
+        if args.fusion == "robust":
+            D, sup = robust_fuse(X, per_view, meta, res, h, tau, args.inlier)
+            del per_view
+            print(f"robust fusion: {time.time()-t0:.0f}s", flush=True)
+            if args.support_out:
+                S = np.zeros(dims, dtype=np.uint8)
+                S[ii] = sup
+                np.save(args.support_out, S)
+                del S
+            del sup
+        else:
+            seen = den > 1e-6
+            D = np.where(seen, num / np.maximum(den, 1e-12), -tau).astype(np.float32)
         if args.quorum > 1:
             # a voxel only one view calls empty keeps what the others say about
             # it: one view with a wrong depth cannot carve on its own
