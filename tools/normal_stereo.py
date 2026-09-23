@@ -124,7 +124,7 @@ def normal_cost(meta, target, sources, nA, nB, hitB, depth, hull, hit, win=11,
 
 def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
                lo, hi, coarse=4.0, fine=1.0, win=11, facing_min=0.15, top=2,
-               vox=1.0 / 1024, fixed=False):
+               vox=1.0 / 1024, fixed=False, masked=True):
     """Coarse-to-fine version of sweep(), on the xp backend.
 
     A pass every `coarse` voxels over [lo, hi] finds each pixel's basin, then
@@ -132,6 +132,13 @@ def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
     a parabola through its neighbours refines below the step. Offsets
     evaluated: (hi-lo)/coarse + 2*coarse/fine + 2 -- 30 instead of 81 for the
     default range. Returns (depth, cost) as NumPy arrays, NaN / inf off hit.
+
+    masked: the window averages only over this view's own silhouette
+    (normalised convolution). Unmasked, the background inside an 11-pixel
+    window counted as the worst possible match, so near every outline -- and
+    across the whole width of a finger, a toe, a torch knob -- the cost was
+    mostly background, and the thin parts that most need an anchor could
+    never get one.
     """
     from xp import cpu, ndi, xp
     res = hit.shape[0]
@@ -155,6 +162,11 @@ def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
                      xp.asarray(loc.astype(np.float32)), facing,
                      xp.asarray(nB[s]), xp.asarray(hitB[s])))
 
+    if masked:
+        hm = xp.zeros(hit.shape, dtype=xp.float32)
+        hm[R, C] = 1.0
+        cover = xp.maximum(ndi.uniform_filter(hm, win, mode="nearest")[R, C], 1e-3)
+
     def cost_at(d):
         X = P + d[:, None] * dA[None, :]
         b0 = xp.full(len(d), 2.0, dtype=xp.float32)
@@ -167,12 +179,14 @@ def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
                          .astype(xp.int32), 0, res - 1)
             ok = hBs[ri, ci] & facing
             dot = xp.sum(nAp * nBs[ri, ci], axis=1)
-            img = xp.full(hit.shape, 2.0, dtype=xp.float32)
+            img = xp.full(hit.shape, 0.0 if masked else 2.0, dtype=xp.float32)
             img[R, C] = xp.where(ok, 1.0 - dot, 2.0)
             c_s = ndi.uniform_filter(img, win, mode="nearest")[R, C]
             b1 = xp.minimum(b1, xp.maximum(b0, c_s))
             b0 = xp.minimum(b0, c_s)
         agg = (b0 + b1) / 2 if top == 2 else b0
+        if masked:
+            agg = agg / cover
         return xp.where(d >= floor - 1e-6, agg, xp.inf)
 
     if fixed:                       # just score the depth as given

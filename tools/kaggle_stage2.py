@@ -115,12 +115,12 @@ for f in os.listdir(data):
 t0 = time.time()
 r = subprocess.run([sys.executable, W + "/code/stage2.py", "--name", NAME,
                     "--workers", "%(workers)d", "--stop-after", "fuse",
-                    "--relief-scale", "%(relief)d"], cwd=W + "/code")
+                    "--relief-scale", "%(relief)d"] + %(extra)r, cwd=W + "/code")
 print("stage2 exit", r.returncode, "minutes", (time.time() - t0) / 60)
 rec = d + "/recon"
 out = W + "/out"
 os.makedirs(out, exist_ok=True)
-for rel in ["stage2.log", "mesh.ply", "mesh_occ.npz", "mesh_field.npy", "fuse1.ply",
+for rel in ["stage2.log", "mesh.ply", "mesh_occ.npz", "mesh_field.npy", "fuse1.ply", "fuse2.ply", "fuse3.ply",
             "hull/hull.ply", "hull/grid.npz"]:
     p = os.path.join(rec, rel)
     if os.path.exists(p):
@@ -141,7 +141,7 @@ shutil.rmtree(W + "/code")
 '''
 
 
-def push(name, workers, gpu=False, reuse_data=False, relief=2):
+def push(name, workers, gpu=False, reuse_data=False, relief=2, extra=()):
     user = owner()
     code_dir = os.path.join(STAGE, "code")
     shutil.rmtree(code_dir, ignore_errors=True)
@@ -176,7 +176,7 @@ def push(name, workers, gpu=False, reuse_data=False, relief=2):
     os.makedirs(kdir)
     open(os.path.join(kdir, "run.py"), "w").write(
         RUNNER % {"name": name, "workers": workers, "gpu": int(gpu),
-                  "relief": relief})
+                  "relief": relief, "extra": list(extra)})
     json.dump({"id": f"{user}/{kname}",
                "title": kname.replace("-", " "),
                "code_file": "run.py", "language": "python",
@@ -222,10 +222,13 @@ def main():
     ap.add_argument("--reuse-data", action="store_true",
                     help="keep an already uploaded image dataset")
     ap.add_argument("--relief-scale", type=int, default=2)
+    ap.add_argument("--stage2-args", default="",
+                    help="extra arguments for stage2.py, e.g. '--passes 3'")
     ap.add_argument("--into", default=None,
                     help="pull into data/<into>/recon instead of data/<name>")
     a = ap.parse_args()
-    {"push": lambda: push(a.name, a.workers, a.gpu, a.reuse_data, a.relief_scale),
+    {"push": lambda: push(a.name, a.workers, a.gpu, a.reuse_data, a.relief_scale,
+                          a.stage2_args.split()),
      "status": lambda: status(a.name, a.gpu),
      "pull": lambda: pull(a.name, a.gpu, a.into)}[a.cmd]()
 

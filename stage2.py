@@ -82,9 +82,11 @@ def main():
                          "(same code, same results; THREED_GPU=1 does the same)")
     ap.add_argument("--stop-after", default=None, choices=["hull", "depth", "fuse"],
                     help="end early, e.g. on a machine without Blender")
-    ap.add_argument("--passes", type=int, default=2, choices=[1, 2],
-                    help="2: re-solve every view against the surface the "
-                         "others agreed on in the first fusion, and fuse again")
+    ap.add_argument("--passes", type=int, default=2,
+                    help="k > 1: k-1 rounds of re-solving every view against "
+                         "the surface the others agreed on, fusing each time")
+    ap.add_argument("--keep-passes", action="store_true",
+                    help="mesh and keep every intermediate fusion")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
     if a.gpu:
@@ -156,7 +158,7 @@ def main():
                 + list(extra), log)
 
     t0 = time.time()
-    depth_pass(depth, ["--save-pass1"] if a.passes == 2 else [])
+    depth_pass(depth, ["--save-pass1"] if a.passes > 1 else [])
     T["depth"] = time.time() - t0
     if a.stop_after == "depth":
         return
@@ -167,21 +169,30 @@ def main():
     if a.passes == 1:
         fuse(depth, mesh)
     elif not fused:
-        f1 = os.path.join(rec, "fuse1")
-        fuse(depth, f1, ["--support-out", f1 + "_support.npy"])
-        T["fuse1"] = time.time() - t0
-        t0 = time.time()
-        cons = os.path.join(rec, "consensus")
-        if a.force or not os.path.exists(os.path.join(cons, f"{names[-1]}.npy")):
-            run([PY, tool("consensus.py"), "--field", f1 + "_field.npy",
-                 "--support", f1 + "_support.npy", "--grid", f1 + "_occ.npz",
-                 "--views", views, "--hull-views", os.path.join(hull, "views"),
-                 "--out", cons], log)
-        depth2 = os.path.join(rec, "depth2")
-        depth_pass(depth2, ["--pass1", depth, "--consensus", cons])
-        T["pass2"] = time.time() - t0
-        t0 = time.time()
-        fuse(depth2, mesh)
+        grid = os.path.join(hull, "grid.npz")
+        prev = depth
+        for k in range(2, a.passes + 1):
+            # fuse what we have, render the agreed surface into every view,
+            # re-solve every view against it
+            fk = os.path.join(rec, f"fuse{k-1}")
+            if a.force or not os.path.exists(fk + "_support.npy"):
+                fuse(prev, fk, ["--support-out", fk + "_support.npy"]
+                     + ([] if a.keep_passes else ["--no-mesh"]))
+            cons = os.path.join(rec, f"consensus{k}")
+            if a.force or not os.path.exists(os.path.join(cons, f"{names[-1]}.npy")):
+                run([PY, tool("consensus.py"), "--field", fk + "_field.npy",
+                     "--support", fk + "_support.npy", "--grid", grid,
+                     "--views", views, "--hull-views", os.path.join(hull, "views"),
+                     "--out", cons], log)
+            dk = os.path.join(rec, f"depth{k}")
+            depth_pass(dk, ["--pass1", depth, "--consensus", cons])
+            for f in (fk + "_field.npy", fk + "_support.npy"):
+                if not a.keep_passes and os.path.exists(f):
+                    os.remove(f)
+            T[f"pass{k}"] = time.time() - t0
+            t0 = time.time()
+            prev = dk
+        fuse(prev, mesh)
     T["fuse"] = time.time() - t0
     if a.stop_after == "fuse":
         print("timings: " + "  ".join(f"{k} {v/60:.1f}min" for k, v in T.items()))

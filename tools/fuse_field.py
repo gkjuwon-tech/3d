@@ -235,6 +235,13 @@ def main():
     ap.add_argument("--support-px", type=float, default=2.0,
                     help="a view counts as anchored at a pixel this close to "
                          "one of its live anchors")
+    ap.add_argument("--edge-len", type=float, default=4.0,
+                    help="pixels; a view's confidence falls as 1-exp(-d/this) "
+                         "with distance d to its own depth discontinuities "
+                         "(jumps over --edge-vox). 0 disables")
+    ap.add_argument("--edge-vox", type=float, default=4.0)
+    ap.add_argument("--no-mesh", action="store_true",
+                    help="write the field (and support) only")
     ap.add_argument("--band", type=float, default=2.0,
                     help="voxels outside the hull still fused (anti-alias)")
     args = ap.parse_args()
@@ -319,6 +326,20 @@ def main():
                 nzv = np.abs(np.load(os.path.join(args.normals_dir, f"{v}.npy"))
                              [..., 2]).astype(np.float32)
                 conf = conf * nzv
+            if args.edge_len > 0:
+                # depth is least reliable next to its own jumps: measured on
+                # Lucy, 44% of pixels within 2 px of one are right to 1.5
+                # voxels, 98% of those 20 px away
+                dd = np.nan_to_num(d.astype(np.float64), nan=1e3)
+                jump = np.zeros(d.shape, bool)
+                jr = np.abs(np.diff(dd, axis=0)) > args.edge_vox * h
+                jc = np.abs(np.diff(dd, axis=1)) > args.edge_vox * h
+                jump[1:] |= jr
+                jump[:-1] |= jr
+                jump[:, 1:] |= jc
+                jump[:, :-1] |= jc
+                jd = ndimage.distance_transform_edt(~jump)
+                conf = conf * (1.0 - np.exp(-jd / args.edge_len))
             conf = np.where(hitv, conf, 0).astype(np.float32)
             # the per-voxel sampling below is the whole cost of fusion, and
             # runs on the xp backend: the GPU when THREED_GPU=1
@@ -379,6 +400,10 @@ def main():
     if args.smooth > 0:
         F = ndimage.gaussian_filter(F, args.smooth, truncate=3.0)
 
+    if args.no_mesh:
+        np.save(args.out + "_field.npy", F.astype(np.float16))
+        print(f"wrote {args.out}_field.npy  {time.time()-t0:.0f}s")
+        return
     occ = F < 0
     np.savez_compressed(args.out + "_occ.npz", occ=np.packbits(occ),
                         dims=np.array(dims), lo=lo, h=h)
