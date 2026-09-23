@@ -57,6 +57,9 @@ def main():
     ap.add_argument("--gt-mesh", default=None, help="score against this mesh")
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--quads", type=int, default=40000)
+    ap.add_argument("--relief-scale", type=int, default=1,
+                    help="passed to depth_mv: integrate the relief on k x k "
+                         "blocks (2 = at 1024 for 2048 images)")
     ap.add_argument("--stop-after", default=None, choices=["hull", "depth", "fuse"],
                     help="end early, e.g. on a machine without Blender")
     ap.add_argument("--force", action="store_true")
@@ -95,6 +98,7 @@ def main():
     procs = [run([PY, tool("depth_mv.py"), "--views", views,
                   "--hull-views", os.path.join(hull, "views"),
                   "--normals-dir", normals, "--out", depth,
+                  "--relief-scale", str(a.relief_scale),
                   "--only-views", ",".join(c)], log, parallel=True)
              for c in chunks if c]
     for p in procs:
