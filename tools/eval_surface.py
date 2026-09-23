@@ -112,6 +112,9 @@ def main():
     ap.add_argument("--samples", type=int, default=2_000_000)
     ap.add_argument("--cache", default="out/gt_samples.npz")
     ap.add_argument("--json", default=None)
+    ap.add_argument("--regions", default="none", choices=["none", "lucy"],
+                    help="the named regions are located on Lucy; other models "
+                         "are scored whole")
     args = ap.parse_args()
 
     gp, gn = gt_samples(args.gt_mesh, args.views, args.samples, args.cache)
@@ -122,7 +125,7 @@ def main():
         rp, rn = sample_with_normals(rv, rf, args.samples,
                                      np.random.default_rng(0))
         res = {"all": score(gp, gn, rp, rn, taus)}
-        for name, (c, r) in REGIONS.items():
+        for name, (c, r) in (REGIONS.items() if args.regions == "lucy" else []):
             c = np.array(c)
             gm = np.linalg.norm(gp - c, axis=1) < r
             rm = np.linalg.norm(rp - c, axis=1) < r
@@ -132,7 +135,7 @@ def main():
 
     keys = ["chamfer", "F@1", "F@2", "normal_median", "normal_mean",
             "normal_bad30"]
-    for region in ["all"] + list(REGIONS):
+    for region in ["all"] + (list(REGIONS) if args.regions == "lucy" else []):
         print(f"\n[{region}]")
         print(f"  {'mesh':<28}" + "".join(f"{k:>14}" for k in keys))
         for path, res in rows.items():

@@ -47,9 +47,9 @@ def refine_parabola(cost, k, offsets):
     K = cost.shape[0]
     km = np.clip(k - 1, 0, K - 1)
     kp = np.clip(k + 1, 0, K - 1)
-    c0 = np.take_along_axis(cost, k[None], 0)[0]
-    cm = np.take_along_axis(cost, km[None], 0)[0]
-    cp = np.take_along_axis(cost, kp[None], 0)[0]
+    c0 = np.take_along_axis(cost, k[None], 0)[0].astype(np.float32)
+    cm = np.take_along_axis(cost, km[None], 0)[0].astype(np.float32)
+    cp = np.take_along_axis(cost, kp[None], 0)[0].astype(np.float32)
     den = cm - 2 * c0 + cp
     ok = np.isfinite(cm) & np.isfinite(cp) & (den > 1e-9) & (k > 0) & (k < K - 1)
     delta = np.where(ok, 0.5 * (cm - cp) / np.where(ok, den, 1), 0.0)
@@ -124,7 +124,7 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
     cost = ns.sweep(meta, view, srcs, nA, nB, hitB, relief, hull, hit,
                     offsets, args.win)
     k = np.argmin(cost, axis=0)
-    best = np.take_along_axis(cost, k[None], 0)[0]
+    best = np.take_along_axis(cost, k[None], 0)[0].astype(np.float32)
     off = refine_parabola(cost, k, offsets)
     del cost
     z_st = relief + off

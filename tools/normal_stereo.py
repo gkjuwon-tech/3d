@@ -67,7 +67,10 @@ def sweep(meta, target, sources, nA, nB, hitB, relief, hull, hit, offsets,
     o = meta["ortho_scale"]
     P0, dA = pixel_rays(meta, target, res)
     K = len(offsets)
-    cost = np.full((K,) + hit.shape, np.inf, dtype=np.float32)
+    # float16 halves the volume (81 offsets x 4M pixels) so three views can be
+    # swept at once; costs live in [0, 2] and the anchor cut is 0.012, well
+    # inside float16's precision there
+    cost = np.full((K,) + hit.shape, np.inf, dtype=np.float16)
     rows, cols = np.nonzero(hit)
     P = P0[rows, cols]
     nAp = nA[rows, cols]

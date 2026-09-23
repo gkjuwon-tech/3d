@@ -56,3 +56,6 @@ out/depth_contact/
 # fused signed-distance fields (hundreds of MB) and cached GT surface samples
 out/*_field.npy
 out/gt_samples.npz
+
+# per-model pipeline outputs (stage1 images, stage2 reconstructions)
+data/
