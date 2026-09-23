@@ -309,9 +309,15 @@ def main():
     ap.add_argument("--sigma", type=float, default=2e-4)
     ap.add_argument("--range-front", type=float, default=20.0,
                     help="voxels swept toward the camera from the local centre")
-    ap.add_argument("--range-back", type=float, default=60.0,
+    ap.add_argument("--range-back", type=float, default=160.0,
                     help="voxels swept away from it; the truth is behind the "
-                         "hull, so the range is lopsided on purpose")
+                         "hull, so the range is lopsided on purpose. 60 did "
+                         "not reach the inside of Lucy's wing from the side, "
+                         "100-120 voxels behind the hull: no anchor formed, "
+                         "the solve dragged the piece onto the hull, and "
+                         "every side view agreed on the same wrong slab. 160: "
+                         "side-view MAE 3.00/5.12 -> 1.83/1.50 voxels, twice "
+                         "the sweep time")
     ap.add_argument("--center-sigma", type=float, default=24.0,
                     help="pixels; smoothing of the gap that centres the sweep")
     ap.add_argument("--step", type=float, default=1.0)
