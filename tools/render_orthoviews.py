@@ -63,6 +63,13 @@ AUX_PRESETS = {
                   ("09_az225_up", 225, 45), ("10_az315_up", 315, 45),
                   ("11_az45_dn", 45, -45), ("12_az135_dn", 135, -45),
                   ("13_az225_dn", 225, -45), ("14_az315_dn", 315, -45)],
+    # four more from above, chosen by coverage (docs/ROADMAP.md, item 2):
+    # over all seven Stanford models, the directions that most reduce the
+    # surface seen by two views or fewer -- where two views agreeing on a
+    # wrong depth have nothing to outvote them. On the Buddha's pedestal
+    # top, 60% -> 23% of the surface.
+    "upper4": [("15_az285_up45", 285, 45), ("16_az90_up30", 90, 30),
+               ("17_az180_up30", 180, 30), ("18_az345_up30", 345, 30)],
     "diagonal4": [("07_az45_up", 45, 45), ("08_az135_up", 135, 45),
                   ("09_az225_dn", 225, -45), ("10_az315_dn", 315, -45)],
 }
