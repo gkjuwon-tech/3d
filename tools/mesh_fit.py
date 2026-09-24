@@ -200,6 +200,8 @@ def main():
     ap.add_argument("--own-cos", type=float, default=0.0,
                     help="detail: each triangle listens to one view group only, the sharpest "
                          "that sees it at a cosine above this (0 = off)")
+    ap.add_argument("--own-shape", action="store_true",
+                    help="apply the one-group-per-triangle rule in the shape stage too")
     ap.add_argument("--chunk", type=int, default=0,
                     help="detail: render this many views at a time, gradients summed (0 = all at once)")
     ap.add_argument("--freeze-extra", action="store_true",
@@ -433,6 +435,25 @@ def main():
         l_a = ((ra - TA).pow(2) * VA * VW * TR).sum() / (VA * VW * TR).sum().clamp(min=1e-6)
         return l_n, l_a, rn, ra, seen, both, tgt_n, O, TR
 
+    gidx_t = torch.tensor([groups.index(g) for g in group], device=dev)
+
+    def owners_in_frame(v, f, R, mvp):
+        """the one-painter rule for the shape stage, where the mesh is
+        remeshed every step: a group 'sees' a triangle when the triangle's
+        centre is inside one of its frames, facing that camera (no occlusion
+        test -- cheap enough to redo every step)"""
+        cen = v[f].mean(1)
+        fn = torch.nn.functional.normalize(torch.linalg.cross(
+            v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]], dim=-1), dim=-1)
+        ch = torch.cat([cen, torch.ones_like(cen[:, :1])], -1) @ mvp.transpose(-2, -1)   # C, F, 4
+        inside = (ch[..., :2].abs() < 0.97).all(-1)                                       # C, F
+        cosv = (fn @ R[:, :, 2].T).T.clamp(min=0) * inside * train[:, None]               # C, F
+        gcos = torch.zeros(len(groups), len(f), device=dev)
+        gcos.index_reduce_(0, gidx_t, cosv, "amax", include_self=True)
+        ok = gcos > a.own_cos
+        first = torch.where(ok.any(0), ok.float().argmax(0), gcos.argmax(0))
+        return (gidx_t[None, :] == first[:, None]).float()
+
     def metrics(rn, ra, seen, both, tgt_n, O, TR):
         with torch.no_grad():
             angs = torch.rad2deg(torch.acos((torch.nn.functional.normalize(rn, dim=-1) * tgt_n)
@@ -465,6 +486,8 @@ def main():
         n = calc_vertex_normals(v, f)
         full = a.views_per_step <= 0 or i % 10 == 0 or i == a.steps - 1
         idx = None if full else torch.randperm(len(names), device=dev)[:a.views_per_step]
+        if a.own_shape and len(groups) > 1:
+            own[0] = owners_in_frame(v.detach(), f, R.detach(), mvp.detach())
         l_n, l_a, rn, ra, seen, both, tgt_s, O_s, TR_s = image_losses(v, f, n, mvp, tgt_n, R, idx)
         l_e = 0.5 * ((v + n).detach() - v).pow(2).mean()
         loss = a.w_normal * l_n + a.w_alpha * l_a + a.w_expand * l_e
