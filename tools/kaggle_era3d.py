@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from kaggle_stage2 import ROOT, STAGE, owner, sh, upload_dataset  # noqa: E402
 
 RUNNER = r'''
-import os, sys, glob, subprocess, importlib, time, json
+import os, sys, glob, subprocess, importlib, time, json, shutil
 W = "/kaggle/working"
 subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv"])
 subprocess.run(["git", "clone", "-q", "--depth", "1", "https://github.com/pengHTYX/Era3D", "/tmp/era"],
@@ -57,7 +57,19 @@ from mvdiffusion.pipelines.pipeline_mvdiffusion_unclip import StableUnCLIPImg2Im
 inp = glob.glob("/kaggle/input/**/input.png", recursive=True)[0]
 os.makedirs("/tmp/in", exist_ok=True)
 Image.open(inp).save("/tmp/in/input.png")
-pipe = StableUnCLIPImg2ImgPipeline.from_pretrained("pengHTYX/MacLab-Era3D-512-6view",
+# newer diffusers refuses the custom unet named in model_index.json, so the
+# snapshot's index is pointed at a stock class and the real unet passed in
+from huggingface_hub import snapshot_download
+from mvdiffusion.models.unet_mv2d_condition import UNetMV2DConditionModel
+repo = snapshot_download("pengHTYX/MacLab-Era3D-512-6view")
+local = "/tmp/era3d_weights"
+shutil.copytree(repo, local, dirs_exist_ok=True, symlinks=False)
+mi = json.load(open(local + "/model_index.json"))
+mi["unet"] = ["diffusers", "UNet2DConditionModel"]
+os.remove(local + "/model_index.json")
+json.dump(mi, open(local + "/model_index.json", "w"))
+unet = UNetMV2DConditionModel.from_pretrained(local, subfolder="unet", torch_dtype=torch.float16)
+pipe = StableUnCLIPImg2ImgPipeline.from_pretrained(local, unet=unet,
                                                    torch_dtype=torch.float16).to("cuda")
 pipe.set_progress_bar_config(disable=True)
 ds = SingleImageDataset(root_dir="/tmp/in", num_views=6, img_wh=[512, 512], bg_color="white",
