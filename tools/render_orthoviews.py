@@ -70,6 +70,8 @@ AUX_PRESETS = {
     # top, 60% -> 23% of the surface.
     "upper4": [("15_az285_up45", 285, 45), ("16_az90_up30", 90, 30),
                ("17_az180_up30", 180, 30), ("18_az345_up30", 345, 30)],
+    # the horizontal diagonals, for generated turnarounds (tools/genlab/more_views.py)
+    "ring4": [("d045", 45, 0), ("d135", 135, 0), ("d225", 225, 0), ("d315", 315, 0)],
     "diagonal4": [("07_az45_up", 45, 45), ("08_az135_up", 135, 45),
                   ("09_az225_dn", 225, -45), ("10_az315_dn", 315, -45)],
 }

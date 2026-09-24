@@ -78,6 +78,8 @@ def main():
     n = vertex_normals(v, f)
     best = np.full(len(v), -2.0); disp = np.zeros(len(v)); dirs = np.zeros_like(v)
     for name in names:
+        if not os.path.exists(f"{a.depth}/{name}.npy"):
+            continue
         m = np.array(meta["views"][name]["matrix_world"])
         right, up, back, loc = m[:3, 0], m[:3, 1], m[:3, 2], m[:3, 3]
         d0 = np.load(f"{a.views}/depth_npy/{name}.npy").astype(np.float64)

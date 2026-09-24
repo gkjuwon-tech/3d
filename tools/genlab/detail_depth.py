@@ -65,6 +65,8 @@ def main():
     ap.add_argument("--cut-px", type=float, default=4.0)
     ap.add_argument("--truth", default=None, help="view set with depth_npy to score against")
     ap.add_argument("--only", default=None)
+    ap.add_argument("--masks", default=None,
+                    help="dir of <view>.png silhouettes to integrate within (default: the proxy's)")
     a = ap.parse_args()
     meta = json.load(open(f"{a.views}/cameras.json"))
     os.makedirs(a.out, exist_ok=True)
@@ -72,10 +74,15 @@ def main():
     for v in meta["views"]:
         if a.only and v not in a.only.split(","):
             continue
+        if not os.path.exists(f"{a.normals}/{v}.npy"):
+            continue
         d = np.load(f"{a.views}/depth_npy/{v}.npy").astype(np.float64)
         res = d.shape[0]
         px = meta["ortho_scale"] / res
         mask = d < 1e3
+        if a.masks:
+            from PIL import Image
+            mask &= np.asarray(Image.open(f"{a.masks}/{v}.png").convert("L")) > 127
         mask = ndimage.binary_erosion(mask, iterations=1)
         n = np.load(f"{a.normals}/{v}.npy").astype(np.float64)
         z0 = np.where(mask, d, 0)
