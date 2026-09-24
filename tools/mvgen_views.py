@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Multi-view generated images -> a stage2 view set.
 
-MV-Adapter draws orthographic views around the vertical axis (elevation 0,
-frustum +-0.55, i.e. ortho_scale 1.1 -- the scale stage2's renders use) at
-azimuths 0, 45, 90, 180, 270, 315. This writes data/<name>/views/{rgb,mask,
+MV-Adapter draws orthographic views (frustum +-0.55, i.e. ortho_scale 1.1 --
+the scale stage2's renders use) at the azimuths and elevations the kernel
+asked for (tools/kaggle_mvgen.py writes them to frame.json; the Hugging Face
+Space draws six level ones at 0, 45, 90, 180, 270, 315). This writes data/<name>/views/{rgb,mask,
 cameras.json}. MV-Adapter places azimuth a at (cos(a-90), sin(a-90), 0) with z up,
 so a = 0 is the front camera (-y) and a = 90 the +x one: ours at 270 + a.
 Silhouettes alone cannot tell (a mirrored object agrees just as well), so the
 convention is taken from its code, and the agreement is only reported.
 
-  views   --src data/catmv/hf --out data/catmv
+  views   --src data/catmv14/mvgen --out data/catmv14
   normals --src data/catmv/normals_raw --out data/catmv   (sign-fixed from the silhouette)
 """
 import argparse
@@ -76,13 +77,25 @@ def agreement(masks, mats, o, n=192):
     return out
 
 
+def layout(src):
+    """[(name, file stem, MV-Adapter azimuth, elevation)]: from the kernel's
+    frame.json, else the Hugging Face Space's six views, saved by index"""
+    fj = os.path.join(src, "frame.json")
+    if os.path.exists(fj):
+        return [(v[0], v[0], v[1], v[2]) for v in json.load(open(fj))["views"]]
+    return [(NAME[z], str(i), z, 0.0) for i, z in enumerate(AZ)]
+
+
 def views(a):
     files = glob.glob(f"{a.src}/view_s*_*.png")
     seeds = sorted({int(re.search(r"view_s(\d+)_", f).group(1)) for f in files})
     s = seeds[0] if a.seed is None else a.seed
-    imgs = {AZ[i]: Image.open(f"{a.src}/view_s{s}_{i}.png").convert("RGB") for i in range(len(AZ))}
-    masks = {NAME[z]: mask_of(im) for z, im in imgs.items()}
-    mats = {NAME[z]: camera((270 + z) % 360) for z in AZ}
+    lay = layout(a.src)
+    imgs = {n: Image.open(f"{a.src}/view_s{s}_{stem}.png").convert("RGB") for n, stem, _, _ in lay}
+    masks = {n: mask_of(im) for n, im in imgs.items()}
+    # MV-Adapter's camera for (az, el) sits where ours for (270 + az, el) does,
+    # with the same right and up vectors (both look-at with z up)
+    mats = {n: camera((270 + az) % 360, el) for n, _, az, el in lay}
     ag = agreement(masks, mats, 1.1)
     print("silhouette agreement (share kept by the strict hull): "
           + " ".join(f"{v} {x:.3f}" for v, x in ag.items()))
@@ -92,9 +105,9 @@ def views(a):
     json.dump({"ortho_scale": 1.1, "resolution": [res, res],
                "views": {v: {"matrix_world": M.tolist()} for v, M in mats.items()}},
               open(f"{a.out}/views/cameras.json", "w"), indent=1)
-    for z, im in imgs.items():
-        im.save(f"{a.out}/views/rgb/{NAME[z]}.png")
-        Image.fromarray((masks[NAME[z]] * 255).astype(np.uint8)).save(f"{a.out}/views/mask/{NAME[z]}.png")
+    for n, im in imgs.items():
+        im.save(f"{a.out}/views/rgb/{n}.png")
+        Image.fromarray((masks[n] * 255).astype(np.uint8)).save(f"{a.out}/views/mask/{n}.png")
 
 
 def calibrate(n, m):
