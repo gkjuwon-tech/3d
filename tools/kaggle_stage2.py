@@ -24,6 +24,7 @@ import argparse
 import glob
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -231,7 +232,7 @@ def main():
                     help="pull into data/<into>/recon instead of data/<name>")
     a = ap.parse_args()
     {"push": lambda: push(a.name, a.workers, a.gpu, a.reuse_data, a.relief_scale,
-                          a.stage2_args.split()),
+                          shlex.split(a.stage2_args)),
      "status": lambda: status(a.name, a.gpu),
      "pull": lambda: pull(a.name, a.gpu, a.into)}[a.cmd]()
 

@@ -103,6 +103,9 @@ def main():
                          "as one system (tools/joint_depth.py)")
     ap.add_argument("--joint-args", default="",
                     help="extra arguments for joint_depth.py")
+    ap.add_argument("--fuse-args", default="",
+                    help="extra arguments for the final fuse_field.py, e.g. "
+                         "'--fusion mean --quorum 2'")
     ap.add_argument("--keep-passes", action="store_true",
                     help="mesh and keep every intermediate fusion")
     ap.add_argument("--force", action="store_true")
@@ -185,7 +188,7 @@ def main():
     t0 = time.time()
     mesh = os.path.join(rec, "mesh")
     if a.passes == 1 and not a.joint:
-        fuse(depth, mesh, ["--shell", "--smooth", str(a.smooth),
+        fuse(depth, mesh, a.fuse_args.split() + ["--shell", "--smooth", str(a.smooth),
                            "--hollow", str(a.hollow)])
     elif not fused:
         grid = os.path.join(hull, "grid.npz")
@@ -227,7 +230,7 @@ def main():
             T[f"pass{k}"] = time.time() - t0
             t0 = time.time()
             prev = dk
-        fuse(prev, mesh, clamp + ["--shell", "--smooth", str(a.smooth),
+        fuse(prev, mesh, clamp + a.fuse_args.split() + ["--shell", "--smooth", str(a.smooth),
                                   "--hollow", str(a.hollow)])
     T["fuse"] = time.time() - t0
     if a.stop_after == "fuse":
