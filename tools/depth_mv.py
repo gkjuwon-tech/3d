@@ -68,8 +68,9 @@ def refine_parabola(cost, k, offsets):
 
 
 def anchored_solve(a, b, grad, w_edge, N, hull_p, px, anc_idx, anc_z, anc_w,
-                   iters, sigma, sigma_a, x0):
-    """Robust screened integration toward sparse anchors."""
+                   iters, sigma, sigma_a, x0, w_floor=None):
+    """Robust screened integration toward sparse anchors. w_floor: per edge,
+    the least weight the robust reweighting may leave it (0 where none)."""
     from scipy import sparse
     from linsolve import spd_solve
     m = len(a)
@@ -95,6 +96,8 @@ def anchored_solve(a, b, grad, w_edge, N, hull_p, px, anc_idx, anc_z, anc_w,
             break
         res_e = (z[b] - z[a]) - grad
         we = w_edge / (1.0 + (res_e / sigma) ** 2)
+        if w_floor is not None:
+            we = np.maximum(we, w_floor)
         res_a = z[anc_idx] - anc_z
         wa = anc_w / (1.0 + (res_a / sigma_a) ** 2)
     return z, we, wa
@@ -273,10 +276,25 @@ def finish(view, hull, n, hit, keep, px, relief, z_st, best, args, t0, t1, t2,
         # hard cut at 0.012 left fingers and the torch knob with no anchor at
         # all -- free to be dragged off by their neighbours
         anc_w = anc_w * np.exp(-(best[anc] - best[anc].min()) / args.anchor_soft)
+    w_floor = None
+    if args.smooth_floor > 0:
+        # A depth jump between two pixels has to show in their normals: at an
+        # occluding contour the near side turns away from the camera. Where
+        # both pixels face it and agree in orientation, nothing in the image
+        # says the surface breaks, and the edge may not be let go. Without
+        # this, anchors that all went wrong together -- the Buddha's flat
+        # pedestal top, which every depth matches equally, anchored 45-118
+        # voxels deep by two views that agreed -- tore their patch off the
+        # rest of the plane and dragged it into the solid.
+        nh = n[hit]
+        cos_max = np.cos(np.radians(args.smooth_deg))
+        smooth = (np.abs(nh[a, 2]) >= args.smooth_nz) & (np.abs(nh[b, 2]) >= args.smooth_nz) \
+            & (np.sum(nh[a] * nh[b], axis=1) >= cos_max)
+        w_floor = np.where(smooth, args.smooth_floor, 0.0)
     z, we, wa = anchored_solve(a, b, grad, np.ones(len(a)), N, hull[hit], px,
                                anc_idx, anc_z, anc_w, args.irls_final,
                                args.sigma, args.sigma_anchor * VOX,
-                               x0=relief[hit])
+                               x0=relief[hit], w_floor=w_floor)
     kept = wa > 0.5 * anc_w
     orphan_note = ""
     if args.orphans == "contact":
@@ -364,6 +382,13 @@ def main():
                          "(consensus.py), added as anchors")
     ap.add_argument("--consensus-w", type=float, default=1.0,
                     help="weight of a consensus anchor relative to a sweep one")
+    ap.add_argument("--smooth-floor", type=float, default=0.2,
+                    help="least robust weight of an edge the normals give no "
+                         "reason to break (both ends facing the camera, "
+                         "--smooth-nz, and within --smooth-deg of each other); "
+                         "0 off")
+    ap.add_argument("--smooth-nz", type=float, default=0.5)
+    ap.add_argument("--smooth-deg", type=float, default=10.0)
     ap.add_argument("--unique-gap", type=float, default=12.0,
                     help="voxels: the sweep's second-best depth is looked for "
                          "at least this far from its best (<view>_margin.npy)")
