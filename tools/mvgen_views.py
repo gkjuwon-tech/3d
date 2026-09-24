@@ -203,6 +203,8 @@ def calibrate(n, m):
     """axis signs that make the rim normals point outward and the body face the camera"""
     d_in = ndimage.distance_transform_edt(m)
     rim = m & (d_in <= 2)
+    # a close-up's frame cuts the body: that edge is not an outline
+    rim[:4], rim[-4:], rim[:, :4], rim[:, -4:] = False, False, False, False
     g = np.stack(np.gradient(ndimage.gaussian_filter(m.astype(float), 2)), -1)
     sx = np.sign(np.sum(n[..., 0][rim] * -g[..., 1][rim])) or 1
     sy = np.sign(np.sum(n[..., 1][rim] * g[..., 0][rim])) or 1
@@ -212,6 +214,7 @@ def calibrate(n, m):
 
 def normals(a):
     os.makedirs(f"{a.out}/normals", exist_ok=True)
+    got = {}
     for p in sorted(glob.glob(f"{a.out}/views/mask/*.png")):
         v = os.path.basename(p)[:-4]
         m = np.asarray(Image.open(p).convert("L")) > 127
@@ -220,10 +223,17 @@ def normals(a):
             n = np.stack([np.asarray(Image.fromarray(n[..., c].astype(np.float32)).resize(
                 m.shape[::-1], Image.BILINEAR)) for c in range(3)], -1)
         n /= np.linalg.norm(n, axis=-1, keepdims=True).clip(1e-9)
-        sx, sy, sz = calibrate(n, m)
-        n *= np.array([sx, sy, sz]); n[~m] = 0
+        got[v] = (n, m, calibrate(n, m))
+    # the axis convention is the estimator's, the same for every view: one
+    # vote over all views, so a view whose outline misleads its own test (a
+    # close-up of books, mostly frame edge) does not get its own flipped axis
+    signs = np.sign(np.sum([c for _, _, c in got.values()], 0))
+    signs[signs == 0] = 1
+    for v, (n, m, c) in got.items():
+        n = n * signs; n[~m] = 0
         np.save(f"{a.out}/normals/{v}.npy", n.astype(np.float32))
-        print(f"{v}: axis signs {sx:+.0f} {sy:+.0f} {sz:+.0f}")
+        print(f"{v}: axis signs {c[0]:+.0f} {c[1]:+.0f} {c[2]:+.0f}" +
+              ("" if tuple(c) == tuple(signs) else f"  -> outvoted, using {signs}"))
 
 
 def main():
