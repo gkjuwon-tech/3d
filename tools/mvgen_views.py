@@ -11,6 +11,7 @@ Silhouettes alone cannot tell (a mirrored object agrees just as well), so the
 convention is taken from its code, and the agreement is only reported.
 
   views   --src data/catmv14/mvgen --out data/catmv14
+  merge   --src data/cat8/mvgen --src2 data/cat8b/mvgen --out data/cat8m/mvgen
   normals --src data/catmv/normals_raw --out data/catmv   (sign-fixed from the silhouette)
 """
 import argparse
@@ -37,7 +38,7 @@ def camera(az, el=0.0):
     return M
 
 
-def mask_of(img, tol=7.0, grad=3.0):
+def mask_of(img, tol=7.0, grad=3.0, keep_frac=0.01):
     """background = flat, background-coloured and connected to the border. The
     clay's shadowed hems are background-grey too, but never flat, so a colour
     test alone floods into them; requiring smoothness stops it at the edge"""
@@ -51,7 +52,13 @@ def mask_of(img, tol=7.0, grad=3.0):
     edge = np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))
     m = ndimage.binary_opening(ndimage.binary_fill_holes(~np.isin(lab, edge[edge > 0])), iterations=1)
     lab, n = ndimage.label(m)
-    return lab == 1 + np.argmax(ndimage.sum(m, lab, range(1, n + 1))) if n else m
+    if not n:
+        return m
+    # every piece of real size, not only the largest: a flame or a raised
+    # hand can be drawn clear of the body in one view and touching it in the
+    # next, and dropping it from one view carves it out of all of them
+    size = ndimage.sum(m, lab, range(1, n + 1))
+    return np.isin(lab, 1 + np.nonzero(size >= keep_frac * size.max())[0])
 
 
 def agreement(masks, mats, o, n=192):
@@ -110,6 +117,85 @@ def views(a):
         Image.fromarray((masks[n] * 255).astype(np.uint8)).save(f"{a.out}/views/mask/{n}.png")
 
 
+def merge(a):
+    """Two MV-Adapter passes -> one ring of eight level views.
+
+    MV-Adapter i2mv draws the six azimuths it was trained on (0, 45, 90, 180,
+    270, 315) consistently -- 98-99% silhouette agreement on the cat -- but
+    135 and 225 are off its training set, and asking for them dropped every
+    view to 82-95%. So the back diagonals come from a second pass whose
+    reference image is the first pass's back view: its 45 and 315 are the
+    ring's 225 and 135. The second pass frames its reference afresh (crops it
+    and scales it to 90% of the canvas), so it is mapped back with one scale
+    and one 3D shift, fitted on the four views both passes drew (the bounding
+    boxes of their silhouettes), and the fit is reported as IoU.
+    """
+    la, lb = layout(a.src), layout(a.src2)
+    trained = {0, 45, 90, 180, 270, 315}
+    A = {az % 360: (n, st) for n, st, az, el in la if el == 0 and az % 360 in trained}
+    B = {int(round(az + a.offset)) % 360: (n, st) for n, st, az, el in lb
+         if el == 0 and az % 360 in trained}
+
+    def load(src, st):
+        im = Image.open(f"{src}/view_s0_{st}.png").convert("RGB")
+        return im, mask_of(im)
+    ma = {z: load(a.src, st) for z, (n, st) in A.items()}
+    mb = {z: load(a.src2, st) for z, (n, st) in B.items()}
+    both = sorted(set(A) & set(B))
+    new = sorted(set(B) - set(A))
+    res = next(iter(ma.values()))[1].shape[0]
+    c = (res - 1) / 2
+
+    def box(m):
+        ys, xs = np.nonzero(m)
+        return ys.min(), ys.max(), xs.min(), xs.max()
+    # scale and vertical shift from the heights, shared by every view
+    sc, vs = [], []
+    for z in both:
+        ta, ba, _, _ = box(ma[z][1]); tb, bb, _, _ = box(mb[z][1])
+        s_ = (bb - tb) / max(ba - ta, 1)
+        sc.append(s_); vs.append((tb + bb) / 2 - (s_ * ((ta + ba) / 2 - c) + c))
+    s_ = float(np.median(sc)); v_ = float(np.median(vs))
+    # horizontal shift per view is a 3D shift seen along that view's right axis
+    rows, rhs = [], []
+    for z in both:
+        _, _, la_, ra = box(ma[z][1]); _, _, lb_, rb = box(mb[z][1])
+        h = (lb_ + rb) / 2 - (s_ * ((la_ + ra) / 2 - c) + c)
+        R = camera((270 + z) % 360)[:3, 0]
+        rows.append(R[:2]); rhs.append(h)
+    txy, *_ = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)
+    print(f"second pass: scale {s_:.4f}, vertical {v_:+.1f} px, shift {txy.round(1)} px")
+
+    def to_a(img, z, order):
+        """resample a second-pass view into the first pass's frame"""
+        h = float(camera((270 + z) % 360)[:3, 0][:2] @ txy)
+        arr = np.asarray(img, np.float64)
+        rr, cc = np.meshgrid(np.arange(res), np.arange(res), indexing="ij")
+        src_r = s_ * (rr - c) + c + v_
+        src_c = s_ * (cc - c) + c + h
+        chans = arr[..., None] if arr.ndim == 2 else arr
+        out = np.stack([ndimage.map_coordinates(chans[..., k], [src_r, src_c], order=order,
+                                                mode="nearest") for k in range(chans.shape[2])], -1)
+        return out[..., 0] if arr.ndim == 2 else out
+    for z in both:
+        w = to_a(mb[z][1].astype(np.float64), z, 1) > 0.5
+        iou = (w & ma[z][1]).sum() / (w | ma[z][1]).sum()
+        print(f"  az {z:3d}: IoU after mapping {iou:.3f}")
+    os.makedirs(a.out, exist_ok=True)
+    views = []
+    for z in sorted(set(A) | set(B)):
+        if z in A:
+            n, _ = A[z]; im, _ = ma[z]
+        else:
+            n = f"d{z:03d}"
+            im = Image.fromarray(to_a(mb[z][0], z, 1).clip(0, 255).astype(np.uint8))
+        im.save(f"{a.out}/view_s0_{n}.png")
+        views.append([n, z, 0])
+    json.dump({"views": views, "merged_from": [a.src, a.src2]},
+              open(f"{a.out}/frame.json", "w"), indent=1)
+    print("merged", [v[0] for v in views], "->", a.out)
+
+
 def calibrate(n, m):
     """axis signs that make the rim normals point outward and the body face the camera"""
     d_in = ndimage.distance_transform_edt(m)
@@ -139,12 +225,15 @@ def normals(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["views", "normals"])
+    ap.add_argument("cmd", choices=["views", "normals", "merge"])
     ap.add_argument("--src", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--src2", help="merge: the second pass (reference = first pass's back view)")
+    ap.add_argument("--offset", type=float, default=180.0,
+                    help="merge: azimuth of the second pass's reference in the first pass")
     a = ap.parse_args()
-    views(a) if a.cmd == "views" else normals(a)
+    {"views": views, "normals": normals, "merge": merge}[a.cmd](a)
 
 
 if __name__ == "__main__":
