@@ -143,6 +143,42 @@ def write_ply(path, v, f):
         fh.write(rec.tobytes())
 
 
+def sobolev(g, f, lam, iters=60):
+    """the gradient smoothed over the surface: solve (I + lam L) x = g by
+    conjugate gradients, L the uniform graph Laplacian.
+
+    Per-vertex steps can only wrinkle a surface. A normal loss that wants a
+    whole face 2 cm further forward pulls each vertex a little, and each
+    vertex answers by tilting its own triangles -- a texture painted on the
+    visual hull, whose flat facets (the flat face, the flat crown, ear tufts
+    that were only hull flaps) survived every fit. Smoothed, the same pull
+    moves the region as one piece (Nicolet et al. 2021, "Large Steps in
+    Inverse Rendering of Geometry")."""
+    import torch
+    from meshfit.remesh import calc_edges
+    e, _ = calc_edges(f)
+    deg = torch.zeros(len(g), device=g.device).index_add_(0, e.reshape(-1), torch.ones(e.numel(), device=g.device))
+
+    def A(x):
+        nb = torch.zeros_like(x).index_add_(0, e[:, 0], x[e[:, 1]]).index_add_(0, e[:, 1], x[e[:, 0]])
+        return x + lam * (deg[:, None] * x - nb)
+    x = g.clone()
+    r = g - A(x)
+    p = r.clone()
+    rs = (r * r).sum(0)
+    for _ in range(iters):
+        Ap = A(p)
+        al = rs / (p * Ap).sum(0).clamp(min=1e-30)
+        x = x + al * p
+        r = r - al * Ap
+        rn = (r * r).sum(0)
+        if rn.max() < 1e-12 * (g * g).sum(0).max():
+            break
+        p = r + (rn / rs.clamp(min=1e-30)) * p
+        rs = rn
+    return x
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--views", required=True)
@@ -200,6 +236,9 @@ def main():
     ap.add_argument("--own-cos", type=float, default=0.0,
                     help="detail: each triangle listens to one view group only, the sharpest "
                          "that sees it at a cosine above this (0 = off)")
+    ap.add_argument("--sobolev", type=float, default=0.0,
+                    help="shape stage: smooth each gradient by (I + lam L)^-1 so regions move as a "
+                         "whole instead of wrinkling (0 = off; 10-50 typical)")
     ap.add_argument("--hp-world", type=float, default=0.0,
                     help="detail: targets keep only relief finer than this (world units, gaussian "
                          "sigma); coarser orientation comes from the settled shape (0 = off)")
@@ -548,6 +587,8 @@ def main():
         if refine:
             loss = loss + a.cam_reg * sum((x * free).pow(2).mean() for x in cam.values())
         loss.backward()
+        if a.sobolev > 0 and v.grad is not None:
+            v.grad = sobolev(v.grad, f, a.sobolev)
         opt.step()
         with torch.no_grad():
             v.data.copy_(torch.maximum(torch.minimum(v.data, bhi), blo))
