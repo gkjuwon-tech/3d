@@ -138,7 +138,7 @@ for f in os.listdir(rec + "/" + final):
         # depth itself must stay float32: values sit near 2.0, where float16's
         # spacing is 2^-9, about two voxels, and a re-fusion of float16 depth
         # comes out terraced (normal median 13.8 deg against 7.2)
-        keep32 = not (f.endswith("_anchordist.npy") or f.endswith("_cost.npy"))
+        keep32 = not f.endswith(("_anchordist.npy", "_cost.npy", "_margin.npy"))
         np.save(os.path.join(out, "depth__" + f), a.astype(np.float32 if keep32 else np.float16))
 shutil.rmtree(W + "/code")
 '''

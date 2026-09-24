@@ -186,9 +186,13 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
         relief = np.load(P("relief")).astype(np.float64)
         z_st = np.load(P("sweep")).astype(np.float64)
         best = np.nan_to_num(np.load(P("cost")).astype(np.float32), nan=np.inf)
+        margin = np.load(P("margin")).astype(np.float32) \
+            if os.path.exists(P("margin")) else None
+        if margin is not None:
+            np.save(os.path.join(args.out, f"{view}_margin.npy"), margin.astype(np.float16))
         t1 = t2 = time.time()
         return finish(view, hull, n, hit, keep, px, relief, z_st, best, args,
-                      t0, t1, t2)
+                      t0, t1, t2, margin)
 
     # 1. relief
     if args.relief_scale > 1:
@@ -214,11 +218,12 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
     nA = ns.world_normals(views_dir, normals_dir, view, meta)
     srcs = [s for s in nB if s != view]
     if args.sweep == "fast":
-        z_st, best = ns.sweep_fast(meta, view, srcs, nA, nB, hitB, relief, hull,
-                                   hit, -args.range_front, args.range_back,
-                                   args.coarse, 1.0, args.win,
-                                   masked=not args.sweep_unmasked,
-                                   trunc=args.sweep_trunc)
+        z_st, best, margin = ns.sweep_fast(
+            meta, view, srcs, nA, nB, hitB, relief, hull, hit,
+            -args.range_front, args.range_back, args.coarse, 1.0, args.win,
+            masked=not args.sweep_unmasked, trunc=args.sweep_trunc,
+            gap=args.unique_gap, return_margin=True)
+        np.save(os.path.join(args.out, f"{view}_margin.npy"), margin.astype(np.float16))
     else:
         offsets = (np.arange(-args.range_front, args.range_back + 1e-9,
                              args.step) * VOX).astype(np.float32)
@@ -231,15 +236,20 @@ def process(views_dir, hull_dir, normals_dir, view, meta, args, nB, hitB):
         z_st = relief + off
     t2 = time.time()
     return finish(view, hull, n, hit, keep, px, relief, z_st, best, args,
-                  t0, t1, t2)
+                  t0, t1, t2, margin if args.sweep == "fast" else None)
 
 
-def finish(view, hull, n, hit, keep, px, relief, z_st, best, args, t0, t1, t2):
+def finish(view, hull, n, hit, keep, px, relief, z_st, best, args, t0, t1, t2,
+           margin=None):
     # 3. anchored robust solve
     a, b, grad, idx = dcx.build_edges(n, hit, keep, px, args.nz_floor)
     N = int(hit.sum())
     anc = hit & np.isfinite(best) & (best < args.anchor_cost) \
         & (z_st >= hull - 1e-6)
+    if margin is not None and args.unique_min > 0:
+        # an anchor only where the best depth beats every depth unique_gap
+        # voxels away by unique_min: a flat surface matches everywhere
+        anc &= np.nan_to_num(margin, nan=0.0) >= args.unique_min
     anc_idx = idx[anc]
     anc_z = z_st[anc]
     anc_w = np.full(len(anc_idx), (1.0 / px ** 2) / args.anchor_len ** 2)
@@ -354,6 +364,12 @@ def main():
                          "(consensus.py), added as anchors")
     ap.add_argument("--consensus-w", type=float, default=1.0,
                     help="weight of a consensus anchor relative to a sweep one")
+    ap.add_argument("--unique-gap", type=float, default=12.0,
+                    help="voxels: the sweep's second-best depth is looked for "
+                         "at least this far from its best (<view>_margin.npy)")
+    ap.add_argument("--unique-min", type=float, default=0.0,
+                    help="an anchor needs its best cost to beat that second "
+                         "best by this much; 0 off")
     ap.add_argument("--no-final-cost", dest="final_cost", action="store_false",
                     help="skip <view>_fcost.npy (cross-view normal cost at "
                          "the final depth, fuse_field's view weight)")

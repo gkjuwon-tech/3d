@@ -124,7 +124,8 @@ def normal_cost(meta, target, sources, nA, nB, hitB, depth, hull, hit, win=11,
 
 def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
                lo, hi, coarse=4.0, fine=1.0, win=11, facing_min=0.15, top=2,
-               vox=1.0 / 1024, fixed=False, masked=True, trunc=0.0):
+               vox=1.0 / 1024, fixed=False, masked=True, trunc=0.0,
+               gap=12.0, return_margin=False):
     """Coarse-to-fine version of sweep(), on the xp backend.
 
     A pass every `coarse` voxels over [lo, hi] finds each pixel's basin, then
@@ -204,14 +205,21 @@ def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
         cost = np.full(hit.shape, np.inf, dtype=np.float32)
         cost[rows, cols] = cpu(cost_at(base))
         return relief, cost
-    # coarse
-    best_c = xp.full(len(rows), xp.inf, dtype=xp.float32)
-    best_o = xp.zeros(len(rows), dtype=xp.float32)
-    for c in np.arange(lo, hi + 1e-9, coarse) * vox:
-        cc = cost_at(base + c)
-        better = cc < best_c
-        best_c = xp.where(better, cc, best_c)
-        best_o = xp.where(better, c, best_o)
+    # coarse -- every offset's cost is kept, to measure afterwards how
+    # unique the best one is
+    offs = np.arange(lo, hi + 1e-9, coarse) * vox
+    CC = xp.stack([cost_at(base + c) for c in offs])
+    kb = xp.argmin(CC, axis=0)
+    best_c = CC[kb, xp.arange(len(rows))]
+    offs_x = xp.asarray(offs.astype(np.float32))
+    best_o = offs_x[kb]
+    # uniqueness: the best cost this pixel reaches at least `gap` voxels away
+    # from its best offset. On a broad flat surface (the Buddha's pedestal
+    # top) every offset matches the other views' normals about equally; the
+    # minimum is then noise, and anchors 45-118 voxels too deep were taken
+    far = xp.abs(offs_x[:, None] - best_o[None, :]) > gap * vox
+    margin_px = xp.min(xp.where(far, CC, xp.inf), axis=0) - best_c
+    del CC, far
     # fine, around each pixel's basin
     deltas = np.arange(-coarse, coarse + 1e-9, fine) * vox
     F = xp.stack([cost_at(base + best_o + dd) for dd in deltas])
@@ -229,6 +237,10 @@ def sweep_fast(meta, target, sources, nA, nB, hitB, relief, hull, hit,
     cost = np.full(hit.shape, np.inf, dtype=np.float32)
     z[rows, cols] = cpu(base + off)
     cost[rows, cols] = cpu(c0)
+    if return_margin:
+        marg = np.full(hit.shape, np.nan, dtype=np.float32)
+        marg[rows, cols] = cpu(margin_px)
+        return z, cost, marg
     return z, cost
 
 
