@@ -197,6 +197,9 @@ def main():
     ap.add_argument("--detail-loss", choices=["l1", "l2", "gm"], default="l1",
                     help="detail: per-pixel normal loss. Geman-McClure stops pulling a facet "
                          "once it is 30 degrees off, so a spike, once formed, stays")
+    ap.add_argument("--own-cos", type=float, default=0.0,
+                    help="detail: each triangle listens to one view group only, the sharpest "
+                         "that sees it at a cosine above this (0 = off)")
     ap.add_argument("--chunk", type=int, default=0,
                     help="detail: render this many views at a time, gradients summed (0 = all at once)")
     ap.add_argument("--freeze-extra", action="store_true",
@@ -373,6 +376,12 @@ def main():
         out = dr.antialias(torch.cat([col, alpha], -1), rast, clip, fi)
         return out[..., :3], out[..., 3], tri_id
 
+    # detail stage: which views each triangle may listen to (F, C), or None
+    own = [None]
+    group = ["main"] * n_main + [nm.split("_")[0] for nm in names[n_main:]]
+    groups = sorted(set(group), key=lambda g: (min(o for o, h in zip(D["ortho"], group) if h == g),
+                                               g != "main"))
+
     def image_losses(v, f, n, mvp, tgt_n, R, idx=None, loss=None):
         """losses over the views idx (all when None): rendering every view at
         every step made an 18-view fit three times slower than a 6-view one,
@@ -380,8 +389,8 @@ def main():
         if idx is None:
             idx = torch.arange(len(names), device=dev)
         O, ON, VA, TA, WG, VW, TR = (x[idx] for x in (obj, objn, val, tgt_a, wgt, vw, tr))
+        view_all = R[:, :, 2].detach()
         mvp, tgt_n, R = mvp[idx], tgt_n[idx], R[idx]
-        view_dir = R[:, :, 2].detach()
         rn, ra, tri = render(v, n, f, mvp)
         seen = O & (ra > 0.5) & (VA > 0.5)
         both = seen & TR & ON
@@ -393,8 +402,13 @@ def main():
             with torch.no_grad():
                 fn = torch.nn.functional.normalize(torch.linalg.cross(
                     v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]], dim=-1), dim=-1)
-                cosv = (fn @ view_dir.T).clamp(min=0)                 # F, C
+                # over every view, not only the ones rendered this step: with
+                # the views in chunks, each chunk's best would count as best
+                cosv = (fn @ view_all.T).clamp(min=0)                 # F, C
+                if own[0] is not None:
+                    cosv = cosv * own[0]
                 sel = (cosv / cosv.max(1, keepdim=True).values.clamp(min=1e-6)) ** a.select
+                sel = sel[:, idx]
                 pix = sel.T[torch.arange(len(idx), device=dev)[:, None, None], tri.clamp(min=0)]
                 pix = torch.where(tri >= 0, pix, torch.zeros_like(pix))
         # on colours (n + 1) / 2 and averaged over channels, as Unique3D does:
@@ -533,6 +547,7 @@ def main():
             fnb = torch.nn.functional.normalize(torch.linalg.cross(
                 base[f[:, 1]] - base[f[:, 0]], base[f[:, 2]] - base[f[:, 0]], dim=-1), dim=-1)
             fconf = torch.zeros(len(f), device=dev)
+            gcos = torch.zeros(len(groups), len(f), device=dev)
             for k in range(len(names)):
                 if train[k].item() < 0.5:
                     continue
@@ -541,7 +556,25 @@ def main():
                 t_ = tri_k[(tri_k >= 0) & obj[k:k + 1]]
                 vis[t_] = True
                 c_ = (fnb @ R[k, :, 2]).clamp(min=0)
-                fconf = torch.maximum(fconf, torch.where(vis, c_, torch.zeros_like(c_)))
+                c_ = torch.where(vis, c_, torch.zeros_like(c_))
+                fconf = torch.maximum(fconf, c_)
+                gi = groups.index(group[k])
+                gcos[gi] = torch.maximum(gcos[gi], c_)
+            if a.own_cos > 0 and len(groups) > 1:
+                # one painter per triangle. Every generation (the main six,
+                # each group drawn over the mesh, each close-up) paints its
+                # own feathers: the same coarse shape, a different pattern.
+                # Letting each triangle pick its best view from all of them
+                # stitched patches of different paintings into flaky scales.
+                # So each triangle takes its detail from one group only: the
+                # sharpest one (smallest frame) that sees it squarely
+                ok = gcos > a.own_cos
+                first = torch.where(ok.any(0), ok.float().argmax(0), gcos.argmax(0))
+                gidx = torch.tensor([groups.index(g) for g in group], device=dev)
+                own[0] = (gidx[None, :] == first[:, None]).float()
+                share = torch.bincount(first, minlength=len(groups)).float() / len(f)
+                print("detail owners: " + ", ".join(f"{g} {share[i].item():.0%}" for i, g in enumerate(groups)),
+                      flush=True)
             vconf = torch.zeros(len(base), device=dev)
             for c in range(3):
                 vconf.scatter_reduce_(0, f[:, c], fconf, reduce="amax")
