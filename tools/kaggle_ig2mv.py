@@ -55,10 +55,14 @@ def groups_from(spec):
             cams = [[45, 0], [135, 0], [225, 0], [315, 0], [45, 89.99], [45, -89.99]]
             out.append({"name": "diag6", "cams": cams, "center": [0, 0, 0], "ortho": 1.1, "frame": "mv"})
         elif g.startswith("zoom:"):
+            g, _, prompt = g.partition("|")
             cx, cy, cz, o = (float(x) for x in g[5:].split(","))
-            cams = [[0, 0], [90, 0], [180, 0], [270, 0], [0, 89.99], [0, -89.99]]
+            # six level cameras: a zoom's top and bottom views look at the
+            # region from inside the rest of the model, so those two slots
+            # go to the front diagonals instead
+            cams = [[0, 0], [45, 0], [90, 0], [180, 0], [270, 0], [315, 0]]
             out.append({"name": f"zoom{len(out)}", "cams": cams, "center": [cx, cy, cz], "ortho": o,
-                        "frame": "mesh"})
+                        "frame": "mesh", "prompt": prompt.strip() or None})
         else:
             raise SystemExit(f"unknown camera group {g}")
     return out
@@ -158,17 +162,18 @@ pipe.cond_encoder.to(device=dev, dtype=dt)
 pipe.vae.enable_slicing(); pipe.vae.enable_tiling()
 print("pipeline ready", round(time.time() - t0), "s", flush=True)
 
-img = np.array(Image.open(src + "/input.png"))
-alpha = img[..., 3] > 127
-ys, xs = np.nonzero(alpha)
-crop = img[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
-h, w = crop.shape[:2]; k = min(H * 0.9 / h, Wd * 0.9 / w)
-crop = np.array(Image.fromarray(crop).resize((max(1, int(w * k)), max(1, int(h * k))), Image.LANCZOS))
-canvas = np.zeros((H, Wd, 4), np.uint8)
-y0 = (H - crop.shape[0]) // 2; x0 = (Wd - crop.shape[1]) // 2
-canvas[y0:y0 + crop.shape[0], x0:x0 + crop.shape[1]] = crop
-rgb = canvas[..., :3] / 255.0; al = canvas[..., 3:4] / 255.0
-ref = Image.fromarray(((rgb * al + 0.5 * (1 - al)) * 255).astype(np.uint8))
+def reference(path):
+  img = np.array(Image.open(path))
+  alpha = img[..., 3] > 127
+  ys, xs = np.nonzero(alpha)
+  crop = img[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+  h, w = crop.shape[:2]; k = min(H * 0.9 / h, Wd * 0.9 / w)
+  crop = np.array(Image.fromarray(crop).resize((max(1, int(w * k)), max(1, int(h * k))), Image.LANCZOS))
+  canvas = np.zeros((H, Wd, 4), np.uint8)
+  y0 = (H - crop.shape[0]) // 2; x0 = (Wd - crop.shape[1]) // 2
+  canvas[y0:y0 + crop.shape[0], x0:x0 + crop.shape[1]] = crop
+  rgb = canvas[..., :3] / 255.0; al = canvas[..., 3:4] / 255.0
+  return Image.fromarray(((rgb * al + 0.5 * (1 - al)) * 255).astype(np.uint8))
 
 for d in ("rgb", "geom_mask", "control"):
     os.makedirs(f"{W}/ig2mv/{d}", exist_ok=True)
@@ -193,8 +198,10 @@ for g in CFG["groups"]:
         ctrl = ctrl.flip(1)                                   # first row = top, like the images
         m = m.flip(1)
     control = ctrl.permute(0, 3, 1, 2).to(dev, dtype=dt)
+    rp = f"{src}/ref_{g['name']}.png"
+    ref = reference(rp if os.path.exists(rp) else src + "/input.png")
     t1 = time.time()
-    out = pipe(CFG["prompt"], height=H, width=Wd, num_inference_steps=CFG["steps"], guidance_scale=3.0,
+    out = pipe(g.get("prompt") or CFG["prompt"], height=H, width=Wd, num_inference_steps=CFG["steps"], guidance_scale=3.0,
                num_images_per_prompt=6, control_image=control, control_conditioning_scale=1.0,
                reference_image=ref, reference_conditioning_scale=1.0,
                negative_prompt="watermark, ugly, deformed, noisy, blurry, low contrast",
@@ -222,6 +229,34 @@ def kid(user, name):
     return f"{user}/threed-ig2mv-{name.replace('_', '-')}"
 
 
+def zoom_reference(a, rgb, m, g):
+    """the reference cut to the zoom's frame. Given the whole object as
+    reference and only a region as geometry, the painter squeezed everything
+    it saw into the frame (book spines across the owl's chest). The front
+    view's mask and the reference's mask share an outline, so their bounding
+    boxes give the map from front-view pixels to reference pixels"""
+    meta = json.load(open(os.path.join(a.align, "cameras.json")))
+    front = sorted(meta["views"])[0]
+    O = float(meta["views"][front].get("ortho_scale", meta["ortho_scale"]))
+    mf = np.asarray(Image.open(os.path.join(a.align, "mask", f"{front}.png"))) > 127
+    R = mf.shape[0]
+    def box(mm):
+        ys, xs = np.nonzero(mm)
+        return ys.min(), ys.max(), xs.min(), xs.max()
+    fb, hb = box(mf), box(m > 127)
+    k = ((hb[1] - hb[0]) / (fb[1] - fb[0]) + (hb[3] - hb[2]) / (fb[3] - fb[2])) / 2
+    cx, _, cz = g["center"]
+    w = g["ortho"]
+    c0, c1 = (cx - w / 2) / O * R + R / 2, (cx + w / 2) / O * R + R / 2
+    r0, r1 = (0.5 - (cz + w / 2) / O) * R, (0.5 - (cz - w / 2) / O) * R
+    H0, C0 = hb[0] + (r0 - fb[0]) * k, hb[2] + (c0 - fb[2]) * k
+    H1, C1 = hb[0] + (r1 - fb[0]) * k, hb[2] + (c1 - fb[2]) * k
+    bx = tuple(int(round(x)) for x in (C0, H0, C1, H1))
+    print(f"{g['name']}: reference cut {bx} (front view {front})")
+    im = Image.fromarray(np.dstack([rgb, m])).crop(bx)
+    return im.resize((768, 768), Image.LANCZOS)
+
+
 def push(a):
     user = owner()
     d = os.path.join(STAGE, f"ig2mv_{a.name}")
@@ -230,11 +265,17 @@ def push(a):
     m = np.asarray(Image.open(a.mask).convert("L"))
     Image.fromarray(np.dstack([rgb, m])).save(os.path.join(d, "input.png"))
     shutil.copy(a.mesh, os.path.join(d, "mesh.ply"))
+    groups = groups_from(a.groups)
+    for g in groups:
+        if g["frame"] == "mesh":
+            if not a.align:
+                raise SystemExit("a zoom group needs --align (the views dir the mesh was fitted in)")
+            zoom_reference(a, rgb, m, g).save(os.path.join(d, f"ref_{g['name']}.png"))
     slug = f"threed-ig2mv-{a.name.replace('_', '-')}-input"
     upload_dataset(user, slug, f"threed ig2mv {a.name} input", d)
     kdir = os.path.join(STAGE, f"kernel_ig2mv_{a.name}")
     shutil.rmtree(kdir, ignore_errors=True); os.makedirs(kdir)
-    cfg = json.dumps({"prompt": a.prompt, "groups": groups_from(a.groups), "steps": a.steps, "seed": a.seed})
+    cfg = json.dumps({"prompt": a.prompt, "groups": groups, "steps": a.steps, "seed": a.seed})
     open(os.path.join(kdir, "run.py"), "w").write(RUNNER.replace("__CFG__", repr(cfg)))
     k = kid(user, a.name)
     json.dump({"id": k, "title": k.split("/")[1].replace("-", " "), "code_file": "run.py",
@@ -253,6 +294,7 @@ def main():
     ap.add_argument("--image")
     ap.add_argument("--mask")
     ap.add_argument("--prompt", default="high quality")
+    ap.add_argument("--align", help="views dir the mesh was fitted in (zoom groups: cuts the reference)")
     ap.add_argument("--groups", default="ring6;diag6", help="';'-separated camera groups")
     ap.add_argument("--steps", type=int, default=30)
     ap.add_argument("--seed", type=int, default=0)

@@ -176,6 +176,10 @@ def main():
     ap.add_argument("--max-disp", type=float, default=0.01, help="detail: largest displacement (world units)")
     ap.add_argument("--subdivide", type=int, default=2,
                     help="detail: split every triangle into 4 this many times first")
+    ap.add_argument("--conf-lo", type=float, default=0.0,
+                    help="detail: vertices no view sees at a cosine above this stay put")
+    ap.add_argument("--conf-hi", type=float, default=0.0,
+                    help="detail: full displacement allowance from this cosine up (0,0 = off)")
     ap.add_argument("--detail-lr", type=float, default=0.05)
     ap.add_argument("--detail-smooth", type=float, default=0.02)
     ap.add_argument("--box-margin", type=float, default=0.005,
@@ -506,11 +510,36 @@ def main():
             acc.index_add_(0, edges[:, 1], nb[edges[:, 0]])
             nb = torch.nn.functional.normalize(nb + acc, dim=-1)
         el = (base[edges[:, 0]] - base[edges[:, 1]]).norm(dim=-1).mean()
+        # how squarely the best camera sees each vertex. Where every view
+        # grazes it (the rim of an ear tuft, a page edge seen side-on) the
+        # target normals are the estimators' guesses at an outline, a
+        # different guess per view, and following them frayed the edge into
+        # crumbs; there the displacement allowance fades to zero
+        with torch.no_grad():
+            fnb = torch.nn.functional.normalize(torch.linalg.cross(
+                base[f[:, 1]] - base[f[:, 0]], base[f[:, 2]] - base[f[:, 0]], dim=-1), dim=-1)
+            fconf = torch.zeros(len(f), device=dev)
+            for k in range(len(names)):
+                if train[k].item() < 0.5:
+                    continue
+                _, _, tri_k = render(base, nb, f, mvp[k:k + 1])
+                vis = torch.zeros(len(f), dtype=torch.bool, device=dev)
+                t_ = tri_k[(tri_k >= 0) & obj[k:k + 1]]
+                vis[t_] = True
+                c_ = (fnb @ R[k, :, 2]).clamp(min=0)
+                fconf = torch.maximum(fconf, torch.where(vis, c_, torch.zeros_like(c_)))
+            vconf = torch.zeros(len(base), device=dev)
+            for c in range(3):
+                vconf.scatter_reduce_(0, f[:, c], fconf, reduce="amax")
+            allow = ((vconf - a.conf_lo) / max(a.conf_hi - a.conf_lo, 1e-6)).clamp(0, 1) \
+                if a.conf_hi > 0 else torch.ones_like(vconf)
+        print(f"detail allowance: {(allow < 1).float().mean().item():.1%} of vertices limited, "
+              f"{(allow == 0).float().mean().item():.1%} frozen", flush=True)
         h = torch.zeros(len(base), device=dev, requires_grad=True)
         hopt = torch.optim.Adam([h], lr=a.detail_lr)
         for j in range(a.detail_steps):
             hopt.zero_grad()
-            d = a.max_disp * torch.tanh(h)
+            d = a.max_disp * allow * torch.tanh(h)
             vv = base + d[:, None] * nb
             nn_ = calc_vertex_normals(vv, f)
             full = a.views_per_step <= 0 or j % 20 == 0 or j == a.detail_steps - 1
@@ -528,7 +557,7 @@ def main():
                 log.append({"step": a.steps + j, "normal_median_deg": ang, "silhouette_iou": iou,
                             "holdout_normal_median_deg": h_ang, "holdout_iou": h_iou,
                             "faces": len(f), "stage": "detail"})
-        v = (base + a.max_disp * torch.tanh(h)[:, None] * nb).detach()
+        v = (base + (a.max_disp * allow * torch.tanh(h))[:, None] * nb).detach()
     with torch.no_grad():
         json.dump({names[k]: {"az_deg": float(np.degrees(cam["az"][k].item())),
                               "tilt_deg": float(np.degrees(cam["tilt"][k].item())),
