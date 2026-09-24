@@ -145,6 +145,12 @@ def main():
     ap.add_argument("--cam-reg", type=float, default=1e-3)
     ap.add_argument("--shading", default="flat", choices=["flat", "smooth"],
                     help="render each triangle's own normal (flat) or interpolated vertex normals")
+    ap.add_argument("--detail-steps", type=int, default=0,
+                    help="after the shape: steps of normal-direction displacement only")
+    ap.add_argument("--max-disp", type=float, default=0.01, help="detail: largest displacement (world units)")
+    ap.add_argument("--detail-lr", type=float, default=0.05)
+    ap.add_argument("--detail-smooth", type=float, default=0.02)
+    ap.add_argument("--holdout", default="", help="views (comma list) left out of the fit, scored only")
     ap.add_argument("--select", type=float, default=8.0,
                     help="per triangle, weight view k by (cos_k / best cos)^s; 0 = all views equal")
     ap.add_argument("--blur", default="8,4,2,1,0",
@@ -227,6 +233,15 @@ def main():
     cam_opt = torch.optim.Adam(list(cam.values()), lr=a.cam_lr)
     free = torch.ones(C, device=dev)
     free[0] = 0                                           # reference view
+    train = torch.ones(C, device=dev)
+    if a.holdout:
+        # left out of every loss and not refined: how well the mesh draws a
+        # view it never saw is the honest test of whether it is one shape or
+        # six separate illusions, each right from its own camera only
+        for h_ in a.holdout.split(","):
+            train[names.index(h_)] = 0
+            free[names.index(h_)] = 0
+    tr = train[:, None, None] > 0.5
     near, far = 0.1, 4.0
 
     def rot(axis, ang):
@@ -287,6 +302,45 @@ def main():
         out = dr.antialias(torch.cat([col, alpha], -1), rast, clip, fi)
         return out[..., :3], out[..., 3], tri_id
 
+    def image_losses(v, f, n, mvp, tgt_n, R):
+        view_dir = R[:, :, 2].detach()
+        rn, ra, tri = render(v, n, f, mvp)
+        seen = obj & (ra > 0.5) & (val > 0.5)
+        both = seen & tr
+        pix = None
+        if a.select > 0:
+            # each triangle listens mostly to the view that sees it most
+            # squarely: neighbouring views draw the same pleat a few pixels
+            # apart, and averaging them carved a zigzag between the two
+            with torch.no_grad():
+                fn = torch.nn.functional.normalize(torch.linalg.cross(
+                    v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]], dim=-1), dim=-1)
+                cosv = (fn @ view_dir.T).clamp(min=0)                 # F, C
+                sel = (cosv / cosv.max(1, keepdim=True).values.clamp(min=1e-6)) ** a.select
+                pix = sel.T[torch.arange(len(names), device=dev)[:, None, None], tri.clamp(min=0)]
+                pix = torch.where(tri >= 0, pix, torch.zeros_like(pix))
+        # on colours (n + 1) / 2 and averaged over channels, as Unique3D does:
+        # summed over [-1, 1] components it outweighed the silhouette 12 to 1
+        # and the mesh swelled past its outline
+        r = ((rn - tgt_n) / 2)[both]
+        w = wgt[both] * (pix[both] if pix is not None else 1.0)
+        per = r.pow(2).sum(-1) if a.loss == "l2" else (r.pow(2).sum(-1) + 1e-6).sqrt()
+        l_n = (per * w).sum() / w.sum().clamp(min=1e-6) / 3
+        l_a = ((ra - tgt_a).pow(2) * val * vw * tr).sum() / (val * vw * tr).sum()
+        return l_n, l_a, rn, ra, seen, both
+
+    def metrics(rn, ra, seen, both, tgt_n):
+        with torch.no_grad():
+            angs = torch.rad2deg(torch.acos((torch.nn.functional.normalize(rn, dim=-1) * tgt_n)
+                                            .sum(-1).clamp(-1, 1)))
+            ang = angs[both].median().item()
+            iou = ((ra > 0.5) & obj & tr).sum().item() / max((((ra > 0.5) | obj) & tr).sum().item(), 1)
+            ho = seen & ~tr
+            h_ang = angs[ho].median().item() if ho.any() else float("nan")
+            h_iou = (((ra > 0.5) & obj & ~tr).sum().item() /
+                     max((((ra > 0.5) | obj) & ~tr).sum().item(), 1)) if a.holdout else float("nan")
+        return ang, iou, h_ang, h_iou
+
     v = torch.tensor(v0, device=dev)
     f = torch.tensor(f0, device=dev)
     opt = MeshOptimizer(v, f, edge_len_lims=(a.edge_end, a.edge_start), local_edgelen=False,
@@ -304,29 +358,8 @@ def main():
         lv = levels_cam[min(len(levels) - 1, int(i / a.steps * len(levels)))]
         tgt_n = torch.einsum("chwj,ckj->chwk", lv, R.detach())
         tgt_n = torch.where(obj[..., None], tgt_n, torch.zeros_like(tgt_n))
-        view_dir = R[:, :, 2].detach()
         n = calc_vertex_normals(v, f)
-        rn, ra, tri = render(v, n, f, mvp)
-        both = obj & (ra > 0.5) & (val > 0.5)
-        if a.select > 0:
-            # each triangle listens mostly to the view that sees it most
-            # squarely: neighbouring views draw the same pleat a few pixels
-            # apart, and averaging them carved a zigzag between the two
-            with torch.no_grad():
-                fn = torch.nn.functional.normalize(torch.linalg.cross(
-                    v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]], dim=-1), dim=-1)
-                cosv = (fn @ view_dir.T).clamp(min=0)                 # F, C
-                sel = (cosv / cosv.max(1, keepdim=True).values.clamp(min=1e-6)) ** a.select
-                pix = sel.T[torch.arange(len(names), device=dev)[:, None, None], tri.clamp(min=0)]
-                pix = torch.where(tri >= 0, pix, torch.zeros_like(pix))
-        # on colours (n + 1) / 2 and averaged over channels, as Unique3D does:
-        # summed over [-1, 1] components it outweighed the silhouette 12 to 1
-        # and the mesh swelled past its outline
-        r = ((rn - tgt_n) / 2)[both]
-        w = wgt[both] * (pix[both] if a.select > 0 else 1.0)
-        per = r.pow(2).sum(-1) if a.loss == "l2" else (r.pow(2).sum(-1) + 1e-6).sqrt()
-        l_n = (per * w).sum() / w.sum().clamp(min=1e-6) / 3
-        l_a = ((ra - tgt_a).pow(2) * val * vw).sum() / (val * vw).sum()
+        l_n, l_a, rn, ra, seen, both = image_losses(v, f, n, mvp, tgt_n, R)
         l_e = 0.5 * ((v + n).detach() - v).pow(2).mean()
         loss = a.w_normal * l_n + a.w_alpha * l_a + a.w_expand * l_e
         loss = loss + (v.abs() > ortho / 2).float().mean() * 10
@@ -342,15 +375,14 @@ def main():
         t = min(1.0, i / max(1, a.edge_steps * a.steps))
         opt._ref_len.fill_(a.edge_start * (a.edge_end / a.edge_start) ** t)
         v, f = opt.remesh()
-        with torch.no_grad():
-            cos = (torch.nn.functional.normalize(rn, dim=-1) * tgt_n).sum(-1)[both].clamp(-1, 1)
-            ang = torch.rad2deg(torch.acos(cos)).median().item()
-            iou = ((ra > 0.5) & obj).sum().item() / max(((ra > 0.5) | obj).sum().item(), 1)
+        ang, iou, h_ang, h_iou = metrics(rn, ra, seen, both, tgt_n)
         log.append({"step": i, "loss_normal": l_n.item(), "loss_alpha": l_a.item(),
-                    "normal_median_deg": ang, "silhouette_iou": iou, "faces": len(f)})
+                    "normal_median_deg": ang, "silhouette_iou": iou, "faces": len(f),
+                    "holdout_normal_median_deg": h_ang, "holdout_iou": h_iou})
         if i % 10 == 0 or i == a.steps - 1:
             print(f"step {i:4d}  normal {ang:5.1f} deg  IoU {iou:.4f}  faces {len(f):,}  "
-                  f"[{time.time()-t0:.0f}s]", flush=True)
+                  + (f"| held out: normal {h_ang:5.1f} deg IoU {h_iou:.4f}  " if a.holdout else "")
+                  + f"[{time.time()-t0:.0f}s]", flush=True)
         if i % 50 == 0 or i == a.steps - 1:
             with torch.no_grad():
                 px = a.res / 2
@@ -367,6 +399,42 @@ def main():
                          for k in range(len(names))]
                 Image.fromarray((np.concatenate(tiles, 1) * 255).astype(np.uint8)).resize(
                     (len(names) * 256, 512)).save(os.path.join(a.out, f"snap_{i:04d}.png"))
+    if a.detail_steps:
+        # detail as a height field over the settled shape: every vertex may
+        # only move along its own normal, and only a little. Free vertices
+        # with six views to satisfy built a separate fin for each camera (right
+        # from that camera, sheets from anywhere between); a displacement
+        # along the normal can carve folds but cannot raise a new wall
+        from meshfit.remesh import calc_edges
+        with torch.no_grad():
+            R, mvp = (x.detach() for x in cameras())
+            tgt_n = torch.einsum("chwj,ckj->chwk", levels_cam[-1], R)
+            tgt_n = torch.where(obj[..., None], tgt_n, torch.zeros_like(tgt_n))
+        base = v.detach().clone()
+        nb = calc_vertex_normals(base, f).detach()
+        edges, _ = calc_edges(f)
+        el = (base[edges[:, 0]] - base[edges[:, 1]]).norm(dim=-1).mean()
+        h = torch.zeros(len(base), device=dev, requires_grad=True)
+        hopt = torch.optim.Adam([h], lr=a.detail_lr)
+        for j in range(a.detail_steps):
+            hopt.zero_grad()
+            d = a.max_disp * torch.tanh(h)
+            vv = base + d[:, None] * nb
+            nn_ = calc_vertex_normals(vv, f)
+            l_n, l_a, rn, ra, seen, both = image_losses(vv, f, nn_, mvp, tgt_n, R)
+            l_s = ((d[edges[:, 0]] - d[edges[:, 1]]) / el).pow(2).mean()
+            loss = a.w_normal * l_n + a.w_alpha * l_a + a.detail_smooth * l_s
+            loss.backward()
+            hopt.step()
+            if j % 20 == 0 or j == a.detail_steps - 1:
+                ang, iou, h_ang, h_iou = metrics(rn, ra, seen, both, tgt_n)
+                print(f"detail {j:4d}  normal {ang:5.1f} deg  IoU {iou:.4f}  "
+                      + (f"| held out: normal {h_ang:5.1f} deg IoU {h_iou:.4f}  " if a.holdout else "")
+                      + f"disp |d| {d.abs().mean().item() / el.item():.3f} edges", flush=True)
+                log.append({"step": a.steps + j, "normal_median_deg": ang, "silhouette_iou": iou,
+                            "holdout_normal_median_deg": h_ang, "holdout_iou": h_iou,
+                            "faces": len(f), "stage": "detail"})
+        v = (base + a.max_disp * torch.tanh(h)[:, None] * nb).detach()
     with torch.no_grad():
         json.dump({names[k]: {"az_deg": float(np.degrees(cam["az"][k].item())),
                               "tilt_deg": float(np.degrees(cam["tilt"][k].item())),
