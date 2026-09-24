@@ -586,9 +586,17 @@ def main():
         loss = a.w_normal * l_n + a.w_alpha * l_a + a.w_expand * l_e
         if refine:
             loss = loss + a.cam_reg * sum((x * free).pow(2).mean() for x in cam.values())
-        loss.backward()
-        if a.sobolev > 0 and v.grad is not None:
-            v.grad = sobolev(v.grad, f, a.sobolev)
+        if a.sobolev > 0:
+            # only the normals' pull is spread over the surface: smoothed,
+            # the silhouette's pull could no longer hold an outline and the
+            # owl shrank into a marshmallow (IoU 0.97 -> 0.88)
+            (a.w_normal * l_n).backward(retain_graph=True)
+            g_n = v.grad.clone()
+            v.grad = None
+            (loss - a.w_normal * l_n).backward()
+            v.grad = v.grad + sobolev(g_n, f, a.sobolev)
+        else:
+            loss.backward()
         opt.step()
         with torch.no_grad():
             v.data.copy_(torch.maximum(torch.minimum(v.data, bhi), blo))
