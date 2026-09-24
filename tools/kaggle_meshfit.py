@@ -7,6 +7,7 @@ first use; PyTorch is never touched), runs the fit under a time limit, and
 brings back mesh.ply, the progress snapshots and the log.
 
   push <name> --views data/cat6/views --normals data/cat6_nirne/normals [--fit-args "..."]
+       [--extra data/cathead/views:data/cathead/normals] [--init data/x/fit/mesh.ply]
   status <name>
   pull <name>   -> data/<name>/fit/
 """
@@ -59,11 +60,26 @@ def push(a):
     user = owner()
     d = os.path.join(STAGE, f"meshfit_{a.name}")
     shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
-    shutil.copy(os.path.join(a.views, "cameras.json"), os.path.join(d, "views__cameras.json"))
-    for p in glob.glob(os.path.join(a.views, "mask", "*.png")):
-        shutil.copy(p, os.path.join(d, "views__mask__" + os.path.basename(p)))
-    for p in glob.glob(os.path.join(a.normals, "*.npy")):
-        shutil.copy(p, os.path.join(d, "normals__" + os.path.basename(p)))
+    def add(prefix, views, normals):
+        shutil.copy(os.path.join(views, "cameras.json"), os.path.join(d, f"{prefix}views__cameras.json"))
+        for sub in ("mask", "valid"):
+            for p in glob.glob(os.path.join(views, sub, "*.png")):
+                shutil.copy(p, os.path.join(d, f"{prefix}views__{sub}__" + os.path.basename(p)))
+        for p in glob.glob(os.path.join(normals, "*.npy")):
+            shutil.copy(p, os.path.join(d, f"{prefix}normals__" + os.path.basename(p)))
+    add("", a.views, a.normals)
+    extra = []
+    for i, pair in enumerate(a.extra):
+        ev, en = pair.split(":")
+        add(f"extra{i}__", ev, en)
+        extra.append(i)
+    fit_args = shlex.split(a.fit_args)
+    if extra:
+        fit_args += ["--extra-views"] + [f"/tmp/job/extra{i}/views" for i in extra]
+        fit_args += ["--extra-normals"] + [f"/tmp/job/extra{i}/normals" for i in extra]
+    if a.init:
+        shutil.copy(a.init, os.path.join(d, "init__mesh.ply"))
+        fit_args += ["--init", "/tmp/job/init/mesh.ply"]
     shutil.copy(os.path.join(HERE, "mesh_fit.py"), os.path.join(d, "code__mesh_fit.py"))
     for p in glob.glob(os.path.join(HERE, "meshfit", "*.py")) + [os.path.join(HERE, "meshfit", "LICENSE_THIRD_PARTY")]:
         shutil.copy(p, os.path.join(d, "code__meshfit__" + os.path.basename(p)))
@@ -72,7 +88,7 @@ def push(a):
     kdir = os.path.join(STAGE, f"kernel_meshfit_{a.name}")
     shutil.rmtree(kdir, ignore_errors=True); os.makedirs(kdir)
     open(os.path.join(kdir, "run.py"), "w").write(
-        RUNNER.replace("__ARGS__", repr(shlex.split(a.fit_args))).replace("__LIMIT__", str(a.limit)))
+        RUNNER.replace("__ARGS__", repr(fit_args)).replace("__LIMIT__", str(a.limit)))
     k = kid(user, a.name)
     json.dump({"id": k, "title": k.split("/")[1].replace("-", " "), "code_file": "run.py",
                "language": "python", "kernel_type": "script", "is_private": True,
@@ -89,6 +105,8 @@ def main():
     ap.add_argument("--views")
     ap.add_argument("--normals")
     ap.add_argument("--fit-args", default="")
+    ap.add_argument("--extra", nargs="*", default=[], help="views_dir:normals_dir pairs")
+    ap.add_argument("--init", default=None, help="mesh to start from")
     ap.add_argument("--limit", type=int, default=3000)
     a = ap.parse_args()
     if a.cmd == "push":

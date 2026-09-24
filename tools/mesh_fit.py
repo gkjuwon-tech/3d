@@ -35,32 +35,51 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def load_views(views, normals, res):
+    """masks, world-space normals, facing weights, and per view: camera,
+    ortho scale, weight and valid region (views/valid/<view>.png, for
+    close-ups whose crop edge is a cut through the body, not an outline)"""
     meta = json.load(open(os.path.join(views, "cameras.json")))
     names = list(meta["views"])
-    M, masks, nrm, face = [], [], [], []
+    out = {k: [] for k in ("M", "mask", "nrm", "face", "ortho", "weight", "valid")}
     for v in names:
+        info = meta["views"][v]
         m = np.asarray(Image.open(os.path.join(views, "mask", f"{v}.png")).convert("L")
                        .resize((res, res), Image.BILINEAR), np.float32) / 255
+        vp = os.path.join(views, "valid", f"{v}.png")
+        val = (np.asarray(Image.open(vp).convert("L").resize((res, res), Image.NEAREST)) > 127
+               if os.path.exists(vp) else np.ones((res, res), bool)).astype(np.float32)
         n = np.load(os.path.join(normals, f"{v}.npy")).astype(np.float32)
         if n.shape[0] != res:
             n = np.stack([np.asarray(Image.fromarray(n[..., c]).resize((res, res), Image.BILINEAR))
                           for c in range(3)], -1)
-        W = np.array(meta["views"][v]["matrix_world"], np.float64)
+        W = np.array(info["matrix_world"], np.float64)
         nw = n @ W[:3, :3].T.astype(np.float32)            # camera frame -> world
         nw /= np.linalg.norm(nw, axis=-1, keepdims=True).clip(1e-6)
         nw[m < 0.5] = 0
         fz = np.clip(n[..., 2], 0, 1)                     # how squarely it faces the camera
         fz[m < 0.5] = 0
-        M.append(W); masks.append(m); nrm.append(nw); face.append(fz)
-    return meta, names, np.stack(M), np.stack(masks), np.stack(nrm), np.stack(face)
+        for k, x in (("M", W), ("mask", m), ("nrm", nw), ("face", fz), ("valid", val),
+                     ("ortho", float(info.get("ortho_scale", meta["ortho_scale"]))),
+                     ("weight", float(info.get("weight", 1.0)))):
+            out[k].append(x)
+    return meta, names, out
 
 
-def clip_matrices(M, ortho, near=0.1, far=4.0):
+def clip_matrices(M, orthos, near=0.1, far=4.0):
     """world -> clip for each orthographic camera (OpenGL conventions)"""
-    h = ortho / 2
-    P = np.array([[1 / h, 0, 0, 0], [0, 1 / h, 0, 0],
-                  [0, 0, -2 / (far - near), -(far + near) / (far - near)], [0, 0, 0, 1]])
-    return np.stack([P @ np.linalg.inv(m) for m in M]).astype(np.float32)
+    out = []
+    for m, o in zip(M, orthos):
+        h = o / 2
+        P = np.array([[1 / h, 0, 0, 0], [0, 1 / h, 0, 0],
+                      [0, 0, -2 / (far - near), -(far + near) / (far - near)], [0, 0, 0, 1]])
+        out.append(P @ np.linalg.inv(m))
+    return np.stack(out).astype(np.float32)
+
+
+def read_ply(path):
+    import trimesh
+    m = trimesh.load(path, process=False)
+    return np.asarray(m.vertices, np.float32), np.asarray(m.faces, np.int64)
 
 
 def carve_hull(M, masks, ortho, n):
@@ -104,6 +123,11 @@ def main():
     ap.add_argument("--normals", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--res", type=int, default=768, help="render and target resolution")
+    ap.add_argument("--extra-views", nargs="*", default=[],
+                    help="more view sets (e.g. close-ups from crop_register.py), each with its "
+                         "own cameras, ortho scales, weights and valid regions")
+    ap.add_argument("--extra-normals", nargs="*", default=[])
+    ap.add_argument("--init", default=None, help="start from this mesh instead of the hull")
     ap.add_argument("--hull-res", type=int, default=128)
     ap.add_argument("--steps", type=int, default=300)
     ap.add_argument("--edge-start", type=float, default=0.06)
@@ -115,6 +139,12 @@ def main():
     ap.add_argument("--w-alpha", type=float, default=1.0)
     ap.add_argument("--w-expand", type=float, default=0.1)
     ap.add_argument("--laplacian", type=float, default=0.02)
+    ap.add_argument("--cam-lr", type=float, default=2e-3, help="Adam step for the camera refinement")
+    ap.add_argument("--cam-steps", type=float, default=0.6,
+                    help="fraction of the run during which cameras are refined (then frozen)")
+    ap.add_argument("--cam-reg", type=float, default=1e-3)
+    ap.add_argument("--shading", default="flat", choices=["flat", "smooth"],
+                    help="render each triangle's own normal (flat) or interpolated vertex normals")
     ap.add_argument("--select", type=float, default=8.0,
                     help="per triangle, weight view k by (cos_k / best cos)^s; 0 = all views equal")
     ap.add_argument("--blur", default="8,4,2,1,0",
@@ -133,16 +163,28 @@ def main():
 
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
-    meta, names, M, masks, nrm, face = load_views(a.views, a.normals, a.res)
+    meta, names, D = load_views(a.views, a.normals, a.res)
     ortho = float(meta["ortho_scale"])
-    v0, f0 = carve_hull(M, masks, ortho, a.hull_res)
+    n_main = len(names)
+    for ev, en in zip(a.extra_views, a.extra_normals):
+        _, nm, E = load_views(ev, en, a.res)
+        names += nm
+        for k in D:
+            D[k] += E[k]
+    M, masks, nrm, face = (np.stack(D[k]) for k in ("M", "mask", "nrm", "face"))
+    valid = np.stack(D["valid"])
+    if a.init:
+        v0, f0 = read_ply(a.init)
+    else:
+        v0, f0 = carve_hull(M[:n_main], masks[:n_main], ortho, a.hull_res)
     write_ply(os.path.join(a.out, "init.ply"), v0, f0)
     print(f"{len(names)} views at {a.res}; hull {len(v0):,} vertices, {len(f0):,} faces "
           f"[{time.time()-t0:.0f}s]", flush=True)
 
     dev = "cuda"
     glctx = dr.RasterizeCudaContext(device=dev)
-    mvp = torch.tensor(clip_matrices(M, ortho), device=dev)
+    val = torch.tensor(valid[:, ::-1].copy(), device=dev)
+    vw = torch.tensor(D["weight"], device=dev, dtype=torch.float32)[:, None, None]
     # nvdiffrast's first image row is the bottom one
     tgt_a = torch.tensor(masks[:, ::-1].copy(), device=dev)
     # coarse to fine in the targets too: the normals blurred at first, so the
@@ -167,18 +209,83 @@ def main():
     obj = tgt_a > 0.5
     # a learned normal is least reliable where the surface turns away from
     # the camera, and there every other view sees it better
-    wgt = torch.tensor(face[:, ::-1].copy(), device=dev) ** a.facing_pow
-    view_dir = torch.tensor(M[:, :3, 2], device=dev, dtype=torch.float32)   # toward each camera
+    wgt = torch.tensor(face[:, ::-1].copy(), device=dev) ** a.facing_pow * vw
 
-    def render(v, n, f):
+    # --- camera refinement (bundle adjustment) ---------------------------------
+    # The generator's cameras are nominal: a view "at 45 degrees" may have been
+    # drawn at 44, a few pixels off centre, a percent larger. Then every
+    # outline and fold points at a different 3D place in each view, and one
+    # surface can only satisfy them all by zigzagging between them. So each
+    # view's camera is refined with the mesh: a turn about the vertical axis,
+    # a tilt, a shift in the image plane and a scale. The first view is held
+    # fixed as the reference.
+    C = len(names)
+    Mt = torch.tensor(M, device=dev, dtype=torch.float32)
+    Rt0 = Mt[:, :3, :3].clone()
+    hs = torch.tensor([o / 2 for o in D["ortho"]], device=dev)
+    cam = {k: torch.zeros(C, device=dev, requires_grad=True) for k in ("az", "tilt", "tx", "ty", "ls")}
+    cam_opt = torch.optim.Adam(list(cam.values()), lr=a.cam_lr)
+    free = torch.ones(C, device=dev)
+    free[0] = 0                                           # reference view
+    near, far = 0.1, 4.0
+
+    def rot(axis, ang):
+        """rotation matrices (C,3,3) about unit axes (C,3) by angles (C,)"""
+        K = torch.zeros(C, 3, 3, device=dev)
+        K[:, 0, 1], K[:, 0, 2] = -axis[:, 2], axis[:, 1]
+        K[:, 1, 0], K[:, 1, 2] = axis[:, 2], -axis[:, 0]
+        K[:, 2, 0], K[:, 2, 1] = -axis[:, 1], axis[:, 0]
+        s_, c_ = torch.sin(ang)[:, None, None], torch.cos(ang)[:, None, None]
+        return torch.eye(3, device=dev)[None] + s_ * K + (1 - c_) * (K @ K)
+
+    def cameras():
+        """refined camera-to-world rotations (C,3,3) and world-to-clip (C,4,4)"""
+        zax = torch.tensor([0.0, 0.0, 1.0], device=dev).expand(C, 3)
+        Rz = rot(zax, cam["az"] * free)
+        Rt = rot(Rt0[:, :, 0], cam["tilt"] * free)
+        Rm = Rz @ Rt
+        R = Rm @ Rt0
+        pos = (Rm @ Mt[:, :3, 3:])[..., 0]
+        Vw = torch.zeros(C, 4, 4, device=dev)
+        Vw[:, :3, :3] = R.transpose(1, 2)
+        Vw[:, :3, 3] = -(R.transpose(1, 2) @ pos[..., None])[..., 0]
+        Vw[:, 3, 3] = 1
+        sc = hs * torch.exp(cam["ls"] * free)
+        P = torch.zeros(C, 4, 4, device=dev)
+        P[:, 0, 0], P[:, 1, 1] = 1 / sc, 1 / sc
+        P[:, 0, 3], P[:, 1, 3] = cam["tx"] * free, cam["ty"] * free
+        P[:, 2, 2], P[:, 2, 3] = -2 / (far - near), -(far + near) / (far - near)
+        P[:, 3, 3] = 1
+        return R, P @ Vw
+
+    with torch.no_grad():
+        err = (cameras()[1] - torch.tensor(clip_matrices(M, D["ortho"]), device=dev)).abs().max().item()
+    print(f"camera model check (refinement at zero vs nominal): max diff {err:.2e}", flush=True)
+    assert err < 1e-4, "refined camera model does not reduce to the nominal one"
+    # targets are kept in each camera's own frame and turned into world space
+    # with the refined rotation every step
+    levels_cam = [torch.einsum("chwk,ckj->chwj", lv, Rt0) for lv in levels]
+
+    def render(v, n, f, mvp):
         vh = torch.cat([v, torch.ones_like(v[:, :1])], -1)
         clip = vh @ mvp.transpose(-2, -1)
         fi = f.int()
         rast, _ = dr.rasterize(glctx, clip, fi, resolution=[a.res, a.res])
-        col, _ = dr.interpolate(n, rast, fi)
+        tri_id = rast[..., 3].long() - 1
+        if a.shading == "flat":
+            # each pixel shows its own triangle's orientation. With vertex
+            # normals interpolated across triangles, a sawtooth surface renders
+            # as the smooth average of its teeth, so the normal loss cannot see
+            # the zigzag it is satisfying; with the faces' own normals it can
+            fn = torch.nn.functional.normalize(torch.linalg.cross(
+                v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]], dim=-1), dim=-1)
+            col = torch.where((tri_id >= 0)[..., None], fn[tri_id.clamp(min=0)],
+                              torch.zeros(1, device=v.device))
+        else:
+            col, _ = dr.interpolate(n, rast, fi)
         alpha = (rast[..., 3:] > 0).float()
         out = dr.antialias(torch.cat([col, alpha], -1), rast, clip, fi)
-        return out[..., :3], out[..., 3], rast[..., 3].long() - 1
+        return out[..., :3], out[..., 3], tri_id
 
     v = torch.tensor(v0, device=dev)
     f = torch.tensor(f0, device=dev)
@@ -187,12 +294,20 @@ def main():
     v = opt.vertices
     log = []
     for i in range(a.steps):
-        tgt_n = levels[min(len(levels) - 1, int(i / a.steps * len(levels)))]
+        refine = i < a.cam_steps * a.steps
         opt.zero_grad()
+        cam_opt.zero_grad()
         opt._lr *= a.decay
+        R, mvp = cameras()
+        if not refine:
+            R, mvp = R.detach(), mvp.detach()
+        lv = levels_cam[min(len(levels) - 1, int(i / a.steps * len(levels)))]
+        tgt_n = torch.einsum("chwj,ckj->chwk", lv, R.detach())
+        tgt_n = torch.where(obj[..., None], tgt_n, torch.zeros_like(tgt_n))
+        view_dir = R[:, :, 2].detach()
         n = calc_vertex_normals(v, f)
-        rn, ra, tri = render(v, n, f)
-        both = obj & (ra > 0.5)
+        rn, ra, tri = render(v, n, f, mvp)
+        both = obj & (ra > 0.5) & (val > 0.5)
         if a.select > 0:
             # each triangle listens mostly to the view that sees it most
             # squarely: neighbouring views draw the same pleat a few pixels
@@ -211,12 +326,16 @@ def main():
         w = wgt[both] * (pix[both] if a.select > 0 else 1.0)
         per = r.pow(2).sum(-1) if a.loss == "l2" else (r.pow(2).sum(-1) + 1e-6).sqrt()
         l_n = (per * w).sum() / w.sum().clamp(min=1e-6) / 3
-        l_a = (ra - tgt_a).pow(2).mean()
+        l_a = ((ra - tgt_a).pow(2) * val * vw).sum() / (val * vw).sum()
         l_e = 0.5 * ((v + n).detach() - v).pow(2).mean()
         loss = a.w_normal * l_n + a.w_alpha * l_a + a.w_expand * l_e
         loss = loss + (v.abs() > ortho / 2).float().mean() * 10
+        if refine:
+            loss = loss + a.cam_reg * sum((x * free).pow(2).mean() for x in cam.values())
         loss.backward()
         opt.step()
+        if refine:
+            cam_opt.step()
         # target edge length on a fixed schedule, coarse to fine over the first
         # --edge-steps fraction: the optimiser's own controller lengthens edges
         # whenever the surface moves slowly, and left the cat 2,400 faces
@@ -232,6 +351,14 @@ def main():
         if i % 10 == 0 or i == a.steps - 1:
             print(f"step {i:4d}  normal {ang:5.1f} deg  IoU {iou:.4f}  faces {len(f):,}  "
                   f"[{time.time()-t0:.0f}s]", flush=True)
+        if i % 50 == 0 or i == a.steps - 1:
+            with torch.no_grad():
+                px = a.res / 2
+                print("   cameras: " + "  ".join(
+                    f"{names[k][:8]} az {np.degrees(cam['az'][k].item()):+.2f} tilt "
+                    f"{np.degrees(cam['tilt'][k].item()):+.2f} shift "
+                    f"({cam['tx'][k].item() * px:+.1f},{cam['ty'][k].item() * px:+.1f})px "
+                    f"scale {np.exp(cam['ls'][k].item()):.4f}" for k in range(1, C)), flush=True)
         if a.snap_every and (i % a.snap_every == 0 or i == a.steps - 1):
             with torch.no_grad():
                 img = ((rn.flip(1) + 1) / 2 * ra.flip(1)[..., None]).clamp(0, 1)
@@ -240,6 +367,12 @@ def main():
                          for k in range(len(names))]
                 Image.fromarray((np.concatenate(tiles, 1) * 255).astype(np.uint8)).resize(
                     (len(names) * 256, 512)).save(os.path.join(a.out, f"snap_{i:04d}.png"))
+    with torch.no_grad():
+        json.dump({names[k]: {"az_deg": float(np.degrees(cam["az"][k].item())),
+                              "tilt_deg": float(np.degrees(cam["tilt"][k].item())),
+                              "shift_px": [cam["tx"][k].item() * a.res / 2, cam["ty"][k].item() * a.res / 2],
+                              "scale": float(np.exp(cam["ls"][k].item()))} for k in range(C)},
+                  open(os.path.join(a.out, "cameras_refined.json"), "w"), indent=1)
     vf, ff = v.detach().cpu().numpy(), f.cpu().numpy()
     write_ply(os.path.join(a.out, "mesh.ply"), vf, ff)
     json.dump(log, open(os.path.join(a.out, "log.json"), "w"))

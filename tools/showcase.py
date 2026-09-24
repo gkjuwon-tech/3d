@@ -36,6 +36,8 @@ def parse_args():
     p.add_argument("--out", required=True)
     p.add_argument("--res", type=int, default=1400)
     p.add_argument("--samples", type=int, default=160)
+    p.add_argument("--fast", action="store_true",
+                   help="6 samples, 1 bounce: for checking shape, not for showing it")
     p.add_argument("--albedo", type=float, default=0.55)
     p.add_argument("--focus", default=None,
                    help="x,y,z to aim at, in the mesh's own coordinates. "
@@ -172,10 +174,12 @@ def main():
     sc = bpy.context.scene
     sc.render.engine = "CYCLES"
     sc.cycles.device = "CPU"
-    sc.cycles.samples = args.samples
+    # --fast: a quick look at the shape (the rasterising engines need a GPU
+    # display, which a headless server has not got)
+    sc.cycles.samples = 6 if args.fast else args.samples
     sc.cycles.use_adaptive_sampling = True
     sc.cycles.use_denoising = True
-    sc.cycles.max_bounces = 4
+    sc.cycles.max_bounces = 1 if args.fast else 4
     sc.render.resolution_x = args.res
     sc.render.resolution_y = int(args.res * 1.25)
     sc.render.film_transparent = False
