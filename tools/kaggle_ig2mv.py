@@ -202,7 +202,8 @@ for g in CFG["groups"]:
                generator=torch.Generator(device=dev).manual_seed(CFG["seed"])).images
     print(f"group {g['name']}: generated in {time.time() - t1:.0f}s", flush=True)
     for (az, el), M, im, mk, ct in zip(g["cams"], Ms, out, m, ctrl):
-        name = f"{g['name']}_az{int(round(az)):03d}_el{int(round(el)):+03d}"
+        # letters only: a '+' in a file name did not survive the Kaggle dataset upload
+        name = f"{g['name']}_az{int(round(az)):03d}_el{'p' if el >= 0 else 'm'}{abs(int(round(el))):02d}"
         im.save(f"{W}/ig2mv/rgb/{name}.png")
         Image.fromarray((mk[..., 0].cpu().numpy() * 255).astype(np.uint8)).save(f"{W}/ig2mv/geom_mask/{name}.png")
         Image.fromarray((ct[..., 3:].cpu().numpy() * 255).astype(np.uint8)).save(f"{W}/ig2mv/control/{name}_normal.png")
