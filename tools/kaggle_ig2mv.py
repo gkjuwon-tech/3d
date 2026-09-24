@@ -24,6 +24,12 @@ Camera groups (azimuth in MV-Adapter's convention: 0 = front; elevation up +):
   diag6   45, 135, 225, 315 level, top, bottom (turned 45 degrees)
   zoom:<cx>,<cy>,<cz>,<ortho>  the ring6 cameras centred on a world point with
           a narrower frame, for one region at higher resolution
+
+A zoom needs a reference of the same region (--image cut to the zoom frame):
+given the whole owl on its books as reference and only head and chest as
+geometry, the painter fitted everything in the reference into the frame and
+drew book spines across the owl's chest. Its top and bottom views look at the
+region from inside the rest of the model and are not usable either.
 """
 import argparse
 import json
