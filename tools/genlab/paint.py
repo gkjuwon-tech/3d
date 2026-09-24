@@ -157,6 +157,26 @@ def render_state(V, names, own, painted, v):
     return out, done
 
 
+STYLE = """
+
+Any further attached images show the same sculpture from other cameras (its turnaround):
+follow their sculpted details and style wherever the first sheet does not show them
+clearly."""
+
+
+def appearance(app_dir, view, nw):
+    """the view's look: a generated image where one exists, otherwise the current
+    surface shaded as matte clay (smooth where nothing is painted yet)"""
+    p = f"{app_dir}/rgb/{view.name}.png"
+    if os.path.exists(p):
+        return Image.open(p)
+    nc = view.cam(nw)
+    L = np.array([-0.35, 0.45, 0.82]); L /= np.linalg.norm(L)
+    s = 0.18 + 0.8 * np.clip(nc @ L, 0, 1)
+    g = np.where(view.mask, 255 * s ** (1 / 2.2), 128).astype(np.uint8)
+    return Image.fromarray(np.repeat(g[..., None], 3, -1))
+
+
 def enc(nc, mask):
     e = ((nc + 1) / 2 * 255 + 0.5).clip(0, 255).astype(np.uint8)
     e[~mask] = 0
@@ -204,10 +224,15 @@ def main():
                     help="px: below this scale the proxy/painted state rules, above it the model")
     ap.add_argument("--sheets", type=int, default=len(SHEETS))
     ap.add_argument("--finish", action="store_true", help="only render the final normals")
+    ap.add_argument("--pairs", default=None,
+                    help="sheets as a:b,c:d,... (opposite views); default: the Lucy set")
+    ap.add_argument("--style", nargs="*", default=[],
+                    help="extra reference images showing the object's look (turnaround sheets)")
     a = ap.parse_args()
     os.makedirs(f"{a.out}/sheets", exist_ok=True); os.makedirs(f"{a.out}/painted", exist_ok=True)
     meta = json.load(open(f"{a.views}/cameras.json"))
-    V = {v: View(a.views, meta, v, a.res) for v in meta["views"]}
+    sheets = [tuple(p.split(":")) for p in a.pairs.split(",")] if a.pairs else SHEETS
+    V = {v: View(a.views, meta, v, a.res) for p in sheets for v in p}
     t0 = time.time()
     names, own = ownership(V)
     share = {v: np.bincount(own[v][V[v].mask] + 1, minlength=len(names) + 1)[1:] for v in names}
@@ -220,16 +245,17 @@ def main():
         p = f"{a.out}/painted/{v}.npy"
         if os.path.exists(p):
             painted[v] = np.load(p)
-    for k, pair in enumerate(SHEETS[:a.sheets]):
+    for k, pair in enumerate(sheets[:a.sheets]):
         if a.finish or all(v in painted for v in pair):
             continue
         state = {v: render_state(V, names, own, painted, v) for v in pair}
         refs = [f"{a.out}/sheets/{k:02d}_rgb.png", f"{a.out}/sheets/{k:02d}_state.png"]
-        two_panel([Image.open(f"{a.appearance}/rgb/{v}.png") for v in pair]).save(refs[0])
+        two_panel([appearance(a.appearance, V[v], state[v][0]) for v in pair]).save(refs[0])
         two_panel([enc(V[v].cam(state[v][0]), V[v].mask) for v in pair]).save(refs[1])
         gen_p = f"{a.out}/sheets/{k:02d}_gen.png"
         if not os.path.exists(gen_p):
-            dt = generate(PROMPT, gen_p, refs)
+            prompt = PROMPT + (STYLE if a.style else "")
+            dt = generate(prompt, gen_p, refs + list(a.style))
             print(f"sheet {k} {pair}: generated in {dt:.0f}s", flush=True)
         for v, panel in zip(pair, panels(Image.open(gen_p))):
             ref_nc = V[v].cam(state[v][0])
