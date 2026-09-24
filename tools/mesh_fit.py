@@ -168,6 +168,12 @@ def main():
                     help="detail: split every triangle into 4 this many times first")
     ap.add_argument("--detail-lr", type=float, default=0.05)
     ap.add_argument("--detail-smooth", type=float, default=0.02)
+    ap.add_argument("--box-margin", type=float, default=0.005,
+                    help="world units the surface may stray outside the hull's bounding box")
+    ap.add_argument("--rim", type=int, default=3,
+                    help="px of each outline excluded from the normal loss")
+    ap.add_argument("--dir-smooth", type=int, default=10,
+                    help="detail: neighbour-averaging passes on the displacement direction")
     ap.add_argument("--holdout", default="", help="views (comma list) left out of the fit, scored only")
     ap.add_argument("--select", type=float, default=8.0,
                     help="per triangle, weight view k by (cos_k / best cos)^s; 0 = all views equal")
@@ -202,6 +208,12 @@ def main():
     else:
         v0, f0 = carve_hull(M[:n_main], masks[:n_main], ortho, a.hull_res)
     write_ply(os.path.join(a.out, "init.ply"), v0, f0)
+    # nothing may leave the hull's box: a surface outside every camera's
+    # frame meets no loss at all, and the inflation term alone grew the owl a
+    # bowl 0.3 units below its plinth. (The check inherited from Unique3D,
+    # (|v| > h).float().mean(), counts and has no gradient.)
+    box_lo = v0.min(0) - a.box_margin
+    box_hi = v0.max(0) + a.box_margin
     print(f"{len(names)} views at {a.res}; hull {len(v0):,} vertices, {len(f0):,} faces "
           f"[{time.time()-t0:.0f}s]", flush=True)
 
@@ -231,6 +243,15 @@ def main():
     levels = [torch.tensor(blurred(sg)[:, ::-1].copy(), device=dev) for sg in sigmas]
     tgt_n = levels[0]
     obj = tgt_a > 0.5
+    blo = torch.tensor(box_lo, device=dev, dtype=torch.float32)
+    bhi = torch.tensor(box_hi, device=dev, dtype=torch.float32)
+    # normals are compared only a few pixels inside each outline: at the rim a
+    # learned normal is least reliable and the views' outlines disagree by a
+    # pixel or two, and there the fit frayed every sharp edge into crumbs
+    from scipy import ndimage as _ndi
+    core = np.stack([_ndi.binary_erosion(m > 0.5, iterations=a.rim) if a.rim > 0 else m > 0.5
+                     for m in masks])
+    objn = torch.tensor(core[:, ::-1].copy(), device=dev)
     # a learned normal is least reliable where the surface turns away from
     # the camera, and there every other view sees it better
     wgt = torch.tensor(face[:, ::-1].copy(), device=dev) ** a.facing_pow * vw
@@ -324,7 +345,7 @@ def main():
         view_dir = R[:, :, 2].detach()
         rn, ra, tri = render(v, n, f, mvp)
         seen = obj & (ra > 0.5) & (val > 0.5)
-        both = seen & tr
+        both = seen & tr & objn
         pix = None
         if a.select > 0:
             # each triangle listens mostly to the view that sees it most
@@ -380,11 +401,12 @@ def main():
         l_n, l_a, rn, ra, seen, both = image_losses(v, f, n, mvp, tgt_n, R)
         l_e = 0.5 * ((v + n).detach() - v).pow(2).mean()
         loss = a.w_normal * l_n + a.w_alpha * l_a + a.w_expand * l_e
-        loss = loss + (v.abs() > ortho / 2).float().mean() * 10
         if refine:
             loss = loss + a.cam_reg * sum((x * free).pow(2).mean() for x in cam.values())
         loss.backward()
         opt.step()
+        with torch.no_grad():
+            v.data.copy_(torch.maximum(torch.minimum(v.data, bhi), blo))
         if refine:
             cam_opt.step()
         # target edge length on a fixed schedule, coarse to fine over the first
@@ -437,8 +459,17 @@ def main():
             v, f = subdivide(v.detach(), f)
         print(f"detail stage on {len(f):,} faces", flush=True)
         base = v.detach().clone()
-        nb = calc_vertex_normals(base, f).detach()
         edges, _ = calc_edges(f)
+        # displacement direction: the vertex normal, smoothed over the
+        # neighbourhood. At a crease (a book's edge) the raw normal points
+        # diagonally out of the corner, and moving along it pushed the edge
+        # sideways into a frayed fringe
+        nb = calc_vertex_normals(base, f).detach()
+        for _ in range(a.dir_smooth):
+            acc = torch.zeros_like(nb)
+            acc.index_add_(0, edges[:, 0], nb[edges[:, 1]])
+            acc.index_add_(0, edges[:, 1], nb[edges[:, 0]])
+            nb = torch.nn.functional.normalize(nb + acc, dim=-1)
         el = (base[edges[:, 0]] - base[edges[:, 1]]).norm(dim=-1).mean()
         h = torch.zeros(len(base), device=dev, requires_grad=True)
         hopt = torch.optim.Adam([h], lr=a.detail_lr)
