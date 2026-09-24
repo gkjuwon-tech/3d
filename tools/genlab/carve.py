@@ -124,6 +124,7 @@ def main():
     f = ndimage.gaussian_filter(occ.astype(np.float32), a.smooth)
     vs, fs, _, _ = skm.marching_cubes(np.pad(f, 1), 0.5)
     vs = (vs - 1 + 0.5) / a.n * 2 * h - h
+    fs = fs[:, ::-1]      # marching cubes on occupancy (inside high) winds faces inward
     write_ply(f"{a.out}/proxy.ply", vs.astype(np.float32), fs.astype(np.int32))
     np.savez_compressed(f"{a.out}/hull.npz", occ=occ, lo=-h, hi=h)
     print(f"mesh: {len(vs):,} verts {len(fs):,} faces -> {a.out}/proxy.ply")
