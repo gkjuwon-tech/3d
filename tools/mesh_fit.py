@@ -77,9 +77,19 @@ def clip_matrices(M, orthos, near=0.1, far=4.0):
 
 
 def read_ply(path):
-    import trimesh
-    m = trimesh.load(path, process=False)
-    return np.asarray(m.vertices, np.float32), np.asarray(m.faces, np.int64)
+    """the binary PLY write_ply writes (float xyz, uchar-count int faces);
+    no trimesh, which the Kaggle image does not have"""
+    with open(path, "rb") as fh:
+        head = b""
+        while not head.endswith(b"end_header\n"):
+            head += fh.readline()
+        lines = head.decode().splitlines()
+        nv = next(int(l.split()[2]) for l in lines if l.startswith("element vertex"))
+        nf = next(int(l.split()[2]) for l in lines if l.startswith("element face"))
+        props = [l.split()[2] for l in lines if l.startswith("property float")]
+        v = np.frombuffer(fh.read(nv * 4 * len(props)), "<f4").reshape(nv, len(props))[:, :3]
+        rec = np.frombuffer(fh.read(nf * 13), dtype=[("n", "u1"), ("i", "<i4", (3,))])
+    return v.astype(np.float32), rec["i"].astype(np.int64)
 
 
 def carve_hull(M, masks, ortho, n):
