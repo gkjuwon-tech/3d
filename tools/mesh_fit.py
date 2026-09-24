@@ -104,6 +104,22 @@ def carve_hull(M, masks, ortho, n):
     return v.astype(np.float32), f[:, ::-1].copy().astype(np.int64)
 
 
+def subdivide(v, f):
+    """split every triangle into four at its edge midpoints (torch)"""
+    import torch
+    e = torch.cat([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]], 0)
+    e_sorted = torch.sort(e, dim=1).values
+    uniq, inv = torch.unique(e_sorted, dim=0, return_inverse=True)
+    mid = (v[uniq[:, 0]] + v[uniq[:, 1]]) / 2
+    nv = len(v)
+    m = inv.view(3, -1).T + nv                           # F, 3: midpoints of edges 01, 12, 20
+    a_, b_, c_ = f[:, 0], f[:, 1], f[:, 2]
+    m01, m12, m20 = m[:, 0], m[:, 1], m[:, 2]
+    nf = torch.cat([torch.stack([a_, m01, m20], 1), torch.stack([m01, b_, m12], 1),
+                    torch.stack([m20, m12, c_], 1), torch.stack([m01, m12, m20], 1)], 0)
+    return torch.cat([v, mid], 0), nf
+
+
 def write_ply(path, v, f):
     with open(path, "wb") as fh:
         fh.write((f"ply\nformat binary_little_endian 1.0\nelement vertex {len(v)}\n"
@@ -148,6 +164,8 @@ def main():
     ap.add_argument("--detail-steps", type=int, default=0,
                     help="after the shape: steps of normal-direction displacement only")
     ap.add_argument("--max-disp", type=float, default=0.01, help="detail: largest displacement (world units)")
+    ap.add_argument("--subdivide", type=int, default=2,
+                    help="detail: split every triangle into 4 this many times first")
     ap.add_argument("--detail-lr", type=float, default=0.05)
     ap.add_argument("--detail-smooth", type=float, default=0.02)
     ap.add_argument("--holdout", default="", help="views (comma list) left out of the fit, scored only")
@@ -410,6 +428,14 @@ def main():
             R, mvp = (x.detach() for x in cameras())
             tgt_n = torch.einsum("chwj,ckj->chwk", levels_cam[-1], R)
             tgt_n = torch.where(obj[..., None], tgt_n, torch.zeros_like(tgt_n))
+        # finer triangles first: the shape stage keeps edges long so the mesh
+        # cannot grow a fin per camera, and at that size an owl's eye was four
+        # triangles wide. Each split turns every triangle into four (edge
+        # midpoints, no smoothing), so the displacement has the pixels' worth
+        # of vertices to carve with
+        for _ in range(a.subdivide):
+            v, f = subdivide(v.detach(), f)
+        print(f"detail stage on {len(f):,} faces", flush=True)
         base = v.detach().clone()
         nb = calc_vertex_normals(base, f).detach()
         edges, _ = calc_edges(f)
