@@ -206,6 +206,9 @@ def main():
     ap.add_argument("--shape-skip-zoom", action="store_true",
                     help="close-up views (frame < 0.8 x the main one) give the shape stage "
                          "their outlines only, their normals go to the detail stage")
+    ap.add_argument("--own-band", type=float, default=0.0,
+                    help="detail: width (fraction of the half frame) over which the next view group "
+                         "fades in towards the edge of the owner's frame (0 = hard hand-over)")
     ap.add_argument("--own-shape", action="store_true",
                     help="apply the one-group-per-triangle rule in the shape stage too")
     ap.add_argument("--chunk", type=int, default=0,
@@ -625,6 +628,8 @@ def main():
                 base[f[:, 1]] - base[f[:, 0]], base[f[:, 2]] - base[f[:, 0]], dim=-1), dim=-1)
             fconf = torch.zeros(len(f), device=dev)
             gcos = torch.zeros(len(groups), len(f), device=dev)
+            gmar = torch.zeros(len(groups), len(f), device=dev)        # distance to the frame edge
+            cen = torch.cat([base[f].mean(1), torch.ones(len(f), 1, device=dev)], -1)
             for k in range(len(names)):
                 if train[k].item() < 0.5:
                     continue
@@ -637,6 +642,8 @@ def main():
                 fconf = torch.maximum(fconf, c_)
                 gi = groups.index(group[k])
                 gcos[gi] = torch.maximum(gcos[gi], c_)
+                mar = 1 - (cen @ mvp[k].T)[:, :2].abs().max(-1).values
+                gmar[gi] = torch.maximum(gmar[gi], torch.where(c_ > a.own_cos, mar, torch.zeros_like(mar)))
             if a.own_cos > 0 and len(groups) > 1:
                 # one painter per triangle. Every generation (the main six,
                 # each group drawn over the mesh, each close-up) paints its
@@ -649,6 +656,18 @@ def main():
                 first = torch.where(ok.any(0), ok.float().argmax(0), gcos.argmax(0))
                 gidx = torch.tensor([groups.index(g) for g in group], device=dev)
                 own[0] = (gidx[None, :] == first[:, None]).float()
+                if a.own_band > 0:
+                    # a hard hand-over from one close-up to the next left a
+                    # seam across the chest: towards the edge of its owner's
+                    # frame the next group in line fades in
+                    rank = torch.arange(len(groups), device=dev)[:, None].expand(-1, len(f))
+                    later = ok & (rank > first[None, :])
+                    nxt = torch.where(later.any(0), later.float().argmax(0), first)
+                    wn = (1 - gmar.gather(0, first[None])[0] / a.own_band).clamp(0, 1)
+                    wn = torch.where(nxt != first, wn, torch.zeros_like(wn))
+                    own[0] = own[0] + wn[:, None] * (gidx[None, :] == nxt[:, None]).float()
+                    print(f"detail owners: {(wn > 0).float().mean().item():.1%} of triangles in a blend band",
+                          flush=True)
                 share = torch.bincount(first, minlength=len(groups)).float() / len(f)
                 print("detail owners: " + ", ".join(f"{g} {share[i].item():.0%}" for i, g in enumerate(groups)),
                       flush=True)
