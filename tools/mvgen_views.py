@@ -38,12 +38,15 @@ def camera(az, el=0.0):
     return M
 
 
-def mask_of(img, tol=7.0, grad=3.0, keep_frac=0.01):
+def mask_of(img, tol=7.0, grad=3.0, keep_frac=0.01, bg=None):
     """background = flat, background-coloured and connected to the border. The
     clay's shadowed hems are background-grey too, but never flat, so a colour
     test alone floods into them; requiring smoothness stops it at the edge"""
     a = np.asarray(img.convert("RGB"), np.float64)
-    bg = np.median(np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]]), 0)
+    if bg is None:
+        # the border's colour -- wrong for a close-up, whose border is mostly
+        # object: the caller then knows better (tools/ig2mv_views.py)
+        bg = np.median(np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]]), 0)
     g = a.mean(-1)
     sm = ndimage.gaussian_filter(g, 1.0)
     gm = np.hypot(ndimage.sobel(sm, 0), ndimage.sobel(sm, 1)) / 8

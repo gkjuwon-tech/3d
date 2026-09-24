@@ -17,6 +17,7 @@ import sys
 
 import numpy as np
 from PIL import Image
+from scipy import ndimage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mvgen_views as mv  # noqa: E402
@@ -34,8 +35,13 @@ def main():
     views = {}
     for n, info in meta["views"].items():
         im = Image.open(os.path.join(a.src, "rgb", f"{n}.png")).convert("RGB")
-        m = mv.mask_of(im)
         g = np.asarray(Image.open(os.path.join(a.src, "geom_mask", f"{n}.png"))) > 127
+        # background colour from well outside the geometry: a close-up's
+        # border is mostly object, and the border's median made the books
+        # the background colour
+        far = ~ndimage.binary_dilation(g, iterations=12)
+        bg = np.median(np.asarray(im, np.float64)[far], 0) if far.sum() > 2000 else None
+        m = mv.mask_of(im, bg=bg)
         iou = (m & g).sum() / max((m | g).sum(), 1)
         im.save(os.path.join(a.out, "rgb", f"{n}.png"))
         Image.fromarray((m * 255).astype(np.uint8)).save(os.path.join(a.out, "mask", f"{n}.png"))
