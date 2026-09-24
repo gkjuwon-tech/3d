@@ -239,6 +239,9 @@ def main():
     ap.add_argument("--sobolev", type=float, default=0.0,
                     help="shape stage: smooth each gradient by (I + lam L)^-1 so regions move as a "
                          "whole instead of wrinkling (0 = off; 10-50 typical)")
+    ap.add_argument("--sobolev-end", type=float, default=0.0,
+                    help="shape stage: the smoothing lambda at the last step (geometric schedule "
+                         "from --sobolev; 0 = constant)")
     ap.add_argument("--hp-world", type=float, default=0.0,
                     help="detail: targets keep only relief finer than this (world units, gaussian "
                          "sigma); coarser orientation comes from the settled shape (0 = off)")
@@ -594,7 +597,11 @@ def main():
             g_n = v.grad.clone()
             v.grad = None
             (loss - a.w_normal * l_n).backward()
-            v.grad = v.grad + sobolev(g_n, f, a.sobolev)
+            # large regions first, small parts (toes, ear tufts) last: the
+            # spread shrinks geometrically from --sobolev to --sobolev-end
+            lam = a.sobolev * (a.sobolev_end / a.sobolev) ** (i / max(a.steps - 1, 1)) \
+                if a.sobolev_end > 0 else a.sobolev
+            v.grad = v.grad + sobolev(g_n, f, lam)
         else:
             loss.backward()
         opt.step()
