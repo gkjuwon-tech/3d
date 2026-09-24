@@ -191,6 +191,15 @@ def main():
     ap.add_argument("--views-per-step", type=int, default=0,
                     help="render a random subset of this many views per step (0 = all); "
                          "every 10th step (20th in detail) still renders all, for logging")
+    ap.add_argument("--detail-views-per-step", type=int, default=0,
+                    help="detail: random view subset per step (0 = all). With a subset each "
+                         "vertex was pulled by a different camera every step and grew hair")
+    ap.add_argument("--detail-loss", choices=["l1", "l2", "gm"], default="l1",
+                    help="detail: per-pixel normal loss. Geman-McClure stops pulling a facet "
+                         "once it is 30 degrees off, so a spike, once formed, stays")
+    ap.add_argument("--freeze-extra", action="store_true",
+                    help="extra views keep their cameras (views drawn over the mesh itself "
+                         "have exact ones)")
     ap.add_argument("--holdout", default="", help="views (comma list) left out of the fit, scored only")
     ap.add_argument("--select", type=float, default=8.0,
                     help="per triangle, weight view k by (cos_k / best cos)^s; 0 = all views equal")
@@ -291,6 +300,8 @@ def main():
     cam_opt = torch.optim.Adam(list(cam.values()), lr=a.cam_lr)
     free = torch.ones(C, device=dev)
     free[0] = 0                                           # reference view
+    if a.freeze_extra:
+        free[n_main:] = 0
     train = torch.ones(C, device=dev)
     if a.holdout:
         # left out of every loss and not refined: how well the mesh draws a
@@ -360,7 +371,7 @@ def main():
         out = dr.antialias(torch.cat([col, alpha], -1), rast, clip, fi)
         return out[..., :3], out[..., 3], tri_id
 
-    def image_losses(v, f, n, mvp, tgt_n, R, idx=None):
+    def image_losses(v, f, n, mvp, tgt_n, R, idx=None, loss=None):
         """losses over the views idx (all when None): rendering every view at
         every step made an 18-view fit three times slower than a 6-view one,
         and a random subset per step converges to the same place"""
@@ -390,9 +401,10 @@ def main():
         r = ((rn - tgt_n) / 2)[both]
         w = WG[both] * (pix[both] if pix is not None else 1.0)
         r2 = r.pow(2).sum(-1)
-        if a.loss == "l2":
+        loss = loss or a.loss
+        if loss == "l2":
             per = r2
-        elif a.loss == "gm":
+        elif loss == "gm":
             # Geman-McClure: a normal far from what the surface and the other
             # views say stops pulling at all, instead of pulling half as hard
             # (L1). Where many zoomed views overlap, that is a vote: the
@@ -542,9 +554,10 @@ def main():
             d = a.max_disp * allow * torch.tanh(h)
             vv = base + d[:, None] * nb
             nn_ = calc_vertex_normals(vv, f)
-            full = a.views_per_step <= 0 or j % 20 == 0 or j == a.detail_steps - 1
-            idx = None if full else torch.randperm(len(names), device=dev)[:a.views_per_step]
-            l_n, l_a, rn, ra, seen, both, tgt_s, O_s, TR_s = image_losses(vv, f, nn_, mvp, tgt_n, R, idx)
+            full = a.detail_views_per_step <= 0 or j % 20 == 0 or j == a.detail_steps - 1
+            idx = None if full else torch.randperm(len(names), device=dev)[:a.detail_views_per_step]
+            l_n, l_a, rn, ra, seen, both, tgt_s, O_s, TR_s = image_losses(vv, f, nn_, mvp, tgt_n, R, idx,
+                                                                          loss=a.detail_loss)
             l_s = ((d[edges[:, 0]] - d[edges[:, 1]]) / el).pow(2).mean()
             loss = a.w_normal * l_n + a.w_alpha * l_a + a.detail_smooth * l_s
             loss.backward()
