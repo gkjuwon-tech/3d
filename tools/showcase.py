@@ -197,14 +197,18 @@ def main():
     if args.shots:
         shots = {}
         for spec in args.shots.split(","):
-            name, az, el, lens = spec.split(":")
-            shots[name] = (float(az), float(el), float(lens))
+            name, az, el, lens, *zt = spec.split(":")
+            shots[name] = (float(az), float(el), float(lens)) + tuple(float(x) for x in zt)
     # the lights were placed for a subject at the origin; carry them along
     for o in sc.objects:
         if o.type == "LIGHT":
             o.matrix_world.translation += target
 
-    for name, (az, el, lens) in shots.items():
+    for name, (az, el, lens, *zt) in shots.items():
+        # optional close-up: zoom factor and a height offset of the aim
+        # point, in units of the bounding radius
+        zoom = zt[0] if zt else 1.0
+        aim = target + Vector((0, 0, (zt[1] if len(zt) > 1 else 0.0) * radius))
         cam_data.lens = lens
         # Frame the bounding sphere rather than guessing a distance: back off
         # exactly far enough for it to fit the vertical field of view, plus a
@@ -212,12 +216,12 @@ def main():
         cam_data.sensor_fit = "VERTICAL"
         cam_data.sensor_height = 24.0
         half_fov = math.atan(cam_data.sensor_height / (2.0 * lens))
-        dist = radius / math.sin(half_fov) * 1.06
+        dist = radius / math.sin(half_fov) * 1.06 / zoom
         a_, e_ = math.radians(az), math.radians(el)
         d = Vector((math.cos(e_) * math.cos(a_),
                     math.cos(e_) * math.sin(a_),
                     math.sin(e_)))
-        loc = target + d * dist
+        loc = aim + d * dist
         z = d.normalized()
         x = Vector((0, 0, 1)).cross(z).normalized()
         y = z.cross(x)

@@ -200,6 +200,9 @@ def main():
     ap.add_argument("--own-cos", type=float, default=0.0,
                     help="detail: each triangle listens to one view group only, the sharpest "
                          "that sees it at a cosine above this (0 = off)")
+    ap.add_argument("--shape-skip-zoom", action="store_true",
+                    help="close-up views (frame < 0.8 x the main one) give the shape stage "
+                         "their outlines only, their normals go to the detail stage")
     ap.add_argument("--own-shape", action="store_true",
                     help="apply the one-group-per-triangle rule in the shape stage too")
     ap.add_argument("--chunk", type=int, default=0,
@@ -380,6 +383,9 @@ def main():
 
     # detail stage: which views each triangle may listen to (F, C), or None
     own = [None]
+    in_detail = [False]
+    main_o = min(D["ortho"][:n_main])
+    zoom_view = torch.tensor([o < 0.8 * main_o for o in D["ortho"]], device=dev)
     group = ["main"] * n_main + [nm.split("_")[0] for nm in names[n_main:]]
     groups = sorted(set(group), key=lambda g: (min(o for o, h in zip(D["ortho"], group) if h == g),
                                                g != "main"))
@@ -391,6 +397,12 @@ def main():
         if idx is None:
             idx = torch.arange(len(names), device=dev)
         O, ON, VA, TA, WG, VW, TR = (x[idx] for x in (obj, objn, val, tgt_a, wgt, vw, tr))
+        if not in_detail[0] and a.shape_skip_zoom:
+            # close-ups carry feather-sized relief at full sharpness; on the
+            # shape stage's coarse mesh (8 mm edges) it cannot be carved and
+            # folded into shaggy fringes instead. They give their outlines
+            # here and their normals only to the detail stage
+            WG = WG * (~zoom_view[idx])[:, None, None]
         view_all = R[:, :, 2].detach()
         mvp, tgt_n, R = mvp[idx], tgt_n[idx], R[idx]
         rn, ra, tri = render(v, n, f, mvp)
@@ -530,6 +542,7 @@ def main():
                 Image.fromarray((np.concatenate(tiles, 1) * 255).astype(np.uint8)).resize(
                     (len(names) * 256, 512)).save(os.path.join(a.out, f"snap_{i:04d}.png"))
     if a.detail_steps:
+        in_detail[0] = True
         # detail as a height field over the settled shape: every vertex may
         # only move along its own normal, and only a little. Free vertices
         # with six views to satisfy built a separate fin for each camera (right
