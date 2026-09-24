@@ -181,7 +181,9 @@ def main():
                     help="gaussian sigmas (px) of the target normals, in equal stages of the run")
     ap.add_argument("--facing-pow", type=float, default=1.0,
                     help="weight each target normal by (its facing the camera)^p; 0 = uniform")
-    ap.add_argument("--loss", default="l1", choices=["l1", "l2"],
+    ap.add_argument("--gm-deg", type=float, default=15.0,
+                    help="gm loss: angle (deg) beyond which a target normal stops pulling")
+    ap.add_argument("--loss", default="l1", choices=["l1", "l2", "gm"],
                     help="normal loss per pixel: l1 (robust: a wrong normal pulls less) or l2")
     ap.add_argument("--snap-every", type=int, default=50, help="steps between progress renders")
     a = ap.parse_args()
@@ -363,7 +365,18 @@ def main():
         # and the mesh swelled past its outline
         r = ((rn - tgt_n) / 2)[both]
         w = wgt[both] * (pix[both] if pix is not None else 1.0)
-        per = r.pow(2).sum(-1) if a.loss == "l2" else (r.pow(2).sum(-1) + 1e-6).sqrt()
+        r2 = r.pow(2).sum(-1)
+        if a.loss == "l2":
+            per = r2
+        elif a.loss == "gm":
+            # Geman-McClure: a normal far from what the surface and the other
+            # views say stops pulling at all, instead of pulling half as hard
+            # (L1). Where many zoomed views overlap, that is a vote: the
+            # consensus wins and the outliers are ignored
+            c2 = (np.sin(np.radians(a.gm_deg) / 2)) ** 2          # colour-space residual at that angle
+            per = r2 / (r2 + c2)
+        else:
+            per = (r2 + 1e-6).sqrt()
         l_n = (per * w).sum() / w.sum().clamp(min=1e-6) / 3
         l_a = ((ra - tgt_a).pow(2) * val * vw * tr).sum() / (val * vw * tr).sum()
         return l_n, l_a, rn, ra, seen, both
