@@ -174,6 +174,9 @@ def main():
                     help="px of each outline excluded from the normal loss")
     ap.add_argument("--dir-smooth", type=int, default=10,
                     help="detail: neighbour-averaging passes on the displacement direction")
+    ap.add_argument("--views-per-step", type=int, default=0,
+                    help="render a random subset of this many views per step (0 = all); "
+                         "every 10th step (20th in detail) still renders all, for logging")
     ap.add_argument("--holdout", default="", help="views (comma list) left out of the fit, scored only")
     ap.add_argument("--select", type=float, default=8.0,
                     help="per triangle, weight view k by (cos_k / best cos)^s; 0 = all views equal")
@@ -343,11 +346,18 @@ def main():
         out = dr.antialias(torch.cat([col, alpha], -1), rast, clip, fi)
         return out[..., :3], out[..., 3], tri_id
 
-    def image_losses(v, f, n, mvp, tgt_n, R):
+    def image_losses(v, f, n, mvp, tgt_n, R, idx=None):
+        """losses over the views idx (all when None): rendering every view at
+        every step made an 18-view fit three times slower than a 6-view one,
+        and a random subset per step converges to the same place"""
+        if idx is None:
+            idx = torch.arange(len(names), device=dev)
+        O, ON, VA, TA, WG, VW, TR = (x[idx] for x in (obj, objn, val, tgt_a, wgt, vw, tr))
+        mvp, tgt_n, R = mvp[idx], tgt_n[idx], R[idx]
         view_dir = R[:, :, 2].detach()
         rn, ra, tri = render(v, n, f, mvp)
-        seen = obj & (ra > 0.5) & (val > 0.5)
-        both = seen & tr & objn
+        seen = O & (ra > 0.5) & (VA > 0.5)
+        both = seen & TR & ON
         pix = None
         if a.select > 0:
             # each triangle listens mostly to the view that sees it most
@@ -358,13 +368,13 @@ def main():
                     v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]], dim=-1), dim=-1)
                 cosv = (fn @ view_dir.T).clamp(min=0)                 # F, C
                 sel = (cosv / cosv.max(1, keepdim=True).values.clamp(min=1e-6)) ** a.select
-                pix = sel.T[torch.arange(len(names), device=dev)[:, None, None], tri.clamp(min=0)]
+                pix = sel.T[torch.arange(len(idx), device=dev)[:, None, None], tri.clamp(min=0)]
                 pix = torch.where(tri >= 0, pix, torch.zeros_like(pix))
         # on colours (n + 1) / 2 and averaged over channels, as Unique3D does:
         # summed over [-1, 1] components it outweighed the silhouette 12 to 1
         # and the mesh swelled past its outline
         r = ((rn - tgt_n) / 2)[both]
-        w = wgt[both] * (pix[both] if pix is not None else 1.0)
+        w = WG[both] * (pix[both] if pix is not None else 1.0)
         r2 = r.pow(2).sum(-1)
         if a.loss == "l2":
             per = r2
@@ -378,19 +388,19 @@ def main():
         else:
             per = (r2 + 1e-6).sqrt()
         l_n = (per * w).sum() / w.sum().clamp(min=1e-6) / 3
-        l_a = ((ra - tgt_a).pow(2) * val * vw * tr).sum() / (val * vw * tr).sum()
-        return l_n, l_a, rn, ra, seen, both
+        l_a = ((ra - TA).pow(2) * VA * VW * TR).sum() / (VA * VW * TR).sum().clamp(min=1e-6)
+        return l_n, l_a, rn, ra, seen, both, tgt_n, O, TR
 
-    def metrics(rn, ra, seen, both, tgt_n):
+    def metrics(rn, ra, seen, both, tgt_n, O, TR):
         with torch.no_grad():
             angs = torch.rad2deg(torch.acos((torch.nn.functional.normalize(rn, dim=-1) * tgt_n)
                                             .sum(-1).clamp(-1, 1)))
             ang = angs[both].median().item()
-            iou = ((ra > 0.5) & obj & tr).sum().item() / max((((ra > 0.5) | obj) & tr).sum().item(), 1)
-            ho = seen & ~tr
+            iou = ((ra > 0.5) & O & TR).sum().item() / max((((ra > 0.5) | O) & TR).sum().item(), 1)
+            ho = seen & ~TR
             h_ang = angs[ho].median().item() if ho.any() else float("nan")
-            h_iou = (((ra > 0.5) & obj & ~tr).sum().item() /
-                     max((((ra > 0.5) | obj) & ~tr).sum().item(), 1)) if a.holdout else float("nan")
+            h_iou = (((ra > 0.5) & O & ~TR).sum().item() /
+                     max((((ra > 0.5) | O) & ~TR).sum().item(), 1)) if a.holdout else float("nan")
         return ang, iou, h_ang, h_iou
 
     v = torch.tensor(v0, device=dev)
@@ -411,7 +421,9 @@ def main():
         tgt_n = torch.einsum("chwj,ckj->chwk", lv, R.detach())
         tgt_n = torch.where(obj[..., None], tgt_n, torch.zeros_like(tgt_n))
         n = calc_vertex_normals(v, f)
-        l_n, l_a, rn, ra, seen, both = image_losses(v, f, n, mvp, tgt_n, R)
+        full = a.views_per_step <= 0 or i % 10 == 0 or i == a.steps - 1
+        idx = None if full else torch.randperm(len(names), device=dev)[:a.views_per_step]
+        l_n, l_a, rn, ra, seen, both, tgt_s, O_s, TR_s = image_losses(v, f, n, mvp, tgt_n, R, idx)
         l_e = 0.5 * ((v + n).detach() - v).pow(2).mean()
         loss = a.w_normal * l_n + a.w_alpha * l_a + a.w_expand * l_e
         if refine:
@@ -428,7 +440,7 @@ def main():
         t = min(1.0, i / max(1, a.edge_steps * a.steps))
         opt._ref_len.fill_(a.edge_start * (a.edge_end / a.edge_start) ** t)
         v, f = opt.remesh()
-        ang, iou, h_ang, h_iou = metrics(rn, ra, seen, both, tgt_n)
+        ang, iou, h_ang, h_iou = metrics(rn, ra, seen, both, tgt_s, O_s, TR_s)
         log.append({"step": i, "loss_normal": l_n.item(), "loss_alpha": l_a.item(),
                     "normal_median_deg": ang, "silhouette_iou": iou, "faces": len(f),
                     "holdout_normal_median_deg": h_ang, "holdout_iou": h_iou})
@@ -491,13 +503,15 @@ def main():
             d = a.max_disp * torch.tanh(h)
             vv = base + d[:, None] * nb
             nn_ = calc_vertex_normals(vv, f)
-            l_n, l_a, rn, ra, seen, both = image_losses(vv, f, nn_, mvp, tgt_n, R)
+            full = a.views_per_step <= 0 or j % 20 == 0 or j == a.detail_steps - 1
+            idx = None if full else torch.randperm(len(names), device=dev)[:a.views_per_step]
+            l_n, l_a, rn, ra, seen, both, tgt_s, O_s, TR_s = image_losses(vv, f, nn_, mvp, tgt_n, R, idx)
             l_s = ((d[edges[:, 0]] - d[edges[:, 1]]) / el).pow(2).mean()
             loss = a.w_normal * l_n + a.w_alpha * l_a + a.detail_smooth * l_s
             loss.backward()
             hopt.step()
             if j % 20 == 0 or j == a.detail_steps - 1:
-                ang, iou, h_ang, h_iou = metrics(rn, ra, seen, both, tgt_n)
+                ang, iou, h_ang, h_iou = metrics(rn, ra, seen, both, tgt_s, O_s, TR_s)
                 print(f"detail {j:4d}  normal {ang:5.1f} deg  IoU {iou:.4f}  "
                       + (f"| held out: normal {h_ang:5.1f} deg IoU {h_iou:.4f}  " if a.holdout else "")
                       + f"disp |d| {d.abs().mean().item() / el.item():.3f} edges", flush=True)
