@@ -103,15 +103,19 @@ class View:
         return nc @ self.R.T
 
 
-def ownership(V):
-    """owner[v][p] = index of the view that sees pixel p's surface point most
-    squarely (largest cosine between proxy normal and view direction)"""
+def ownership(V, painters=None):
+    """owner[v][p] = index (in names) of the painting view that sees pixel p's
+    surface point most squarely (largest cosine between proxy normal and view
+    direction). Only painters can own; every view in V gets an owner map."""
     names = list(V)
+    painters = painters or names
     own = {}
     for v in names:
         X = V[v].X
         best = np.full(X.shape[:2], -2.0); arg = np.full(X.shape[:2], -1)
         for i, u in enumerate(names):
+            if u not in painters:
+                continue
             _, _, vis = V[u].sees(X)
             cos = V[v].nw @ V[u].back
             better = V[v].mask & vis & (cos > best)
@@ -149,12 +153,32 @@ def render_state(V, names, own, painted, v):
         if not sel.any():
             continue
         r, c, _ = V[u].sees(view.X[sel])
-        val, ok = sample(painted[u], r, c, own[u] == i)
+        val, ok = sample(painted[u], r, c, (own[u] == i) & (np.abs(painted[u]).sum(-1) > 0))
         n = val / np.linalg.norm(val, axis=-1, keepdims=True).clip(1e-9)
         idx = np.nonzero(sel)
         out[idx[0][ok], idx[1][ok]] = n[ok]
         done[idx[0][ok], idx[1][ok]] = True
     return out, done
+
+
+LOOSE = """Make a detailed surface-normal sheet of the sculpture.
+
+The first reference is a sheet of two panels: the sculpture seen by two orthographic
+cameras. It defines the sculpture: its exact outline, its pose and every shape in it.
+The second reference is the matching sheet of a ROUGH draft of the normals, panel for
+panel, same framing: a blocky approximation that is only roughly right. Where the draft
+already shows fine sculpted detail that matches the first sheet, keep it; everywhere
+else ignore the draft's shapes and draw the true ones from the first sheet.
+
+Each panel is in its own camera frame, standard encoding R = (x+1)/2, G = (y+1)/2,
+B = (z+1)/2 with x right, y up, z toward that panel's viewer: surfaces facing the camera
+are light purple-blue (128,128,255). Black background, white gutter with black
+registration squares.
+
+Output the two-panel normal sheet of the sculpture in the first sheet: exactly its
+outline and position in each panel, its true forms (head, face, ears, arms, hands,
+dress, folds, lace, tail, flames), same encoding. It must be a normal map, not a
+picture: no lighting, no shadows. Keep the sheet's wide 2:1 proportions."""
 
 
 STYLE = """
@@ -198,20 +222,25 @@ def panels(img):
     return [g.crop((i * (P + GUT), 0, i * (P + GUT) + P, P)) for i in range(2)]
 
 
-def take(view, panel, ref_nc, sig):
-    """generated panel -> camera normals: registered to the proxy outline, large
-    scale from the reference (proxy / painted state), detail from the panel"""
+def take(view, panel, ref_nc, sig, align=True):
+    """generated panel -> camera normals, and the panel's own silhouette:
+    registered to the proxy outline (align) or taken where the sheet put it,
+    large scale from the reference (proxy / painted state), detail from the panel"""
     res = view.res
     g = np.asarray(panel.resize((res, res), Image.LANCZOS), np.float64)
     gm = measure.mask_from(g, (0, 0, 0), tol=24)
-    iou, s, ty, tx = measure.align(gm, view.mask)
+    if align:
+        iou, s, ty, tx = measure.align(gm, view.mask)
+    else:
+        iou, s, ty, tx = measure.iou(gm, view.mask), 1.0, 0.0, 0.0
     g = measure.warp(g, s, ty, tx, order=1)
+    gm = measure.warp(gm, s, ty, tx) > 0.5
     n = g / 255 * 2 - 1
     n /= np.linalg.norm(n, axis=-1, keepdims=True).clip(1e-9)
     m = view.mask
     out = bands.blur_n(ref_nc, m, sig) + (n - bands.blur_n(n, m, sig))
     out /= np.linalg.norm(out, axis=-1, keepdims=True).clip(1e-9)
-    return out, (iou, s, ty, tx)
+    return out, gm, (iou, s, ty, tx)
 
 
 def main():
@@ -226,15 +255,25 @@ def main():
     ap.add_argument("--finish", action="store_true", help="only render the final normals")
     ap.add_argument("--pairs", default=None,
                     help="sheets as a:b,c:d,... (opposite views); default: the Lucy set")
+    ap.add_argument("--painters", default=None,
+                    help="comma list of views allowed to own surface (default: all sheet views)")
+    ap.add_argument("--render", default=None,
+                    help="comma list of views to write final normals for (default: sheet views)")
+    ap.add_argument("--loose", action="store_true",
+                    help="the proxy is only a rough bound: shape and outline come from the "
+                         "appearance images, panels are not re-registered to the proxy outline, "
+                         "and only pixels inside a painted silhouette count as surface")
     ap.add_argument("--style", nargs="*", default=[],
                     help="extra reference images showing the object's look (turnaround sheets)")
     a = ap.parse_args()
     os.makedirs(f"{a.out}/sheets", exist_ok=True); os.makedirs(f"{a.out}/painted", exist_ok=True)
     meta = json.load(open(f"{a.views}/cameras.json"))
     sheets = [tuple(p.split(":")) for p in a.pairs.split(",")] if a.pairs else SHEETS
-    V = {v: View(a.views, meta, v, a.res) for p in sheets for v in p}
+    need = [v for p in sheets for v in p] + (a.render.split(",") if a.render else [])
+    V = {v: View(a.views, meta, v, a.res) for v in dict.fromkeys(need)}
+    painters = a.painters.split(",") if a.painters else [v for p in sheets for v in p]
     t0 = time.time()
-    names, own = ownership(V)
+    names, own = ownership(V, painters)
     share = {v: np.bincount(own[v][V[v].mask] + 1, minlength=len(names) + 1)[1:] for v in names}
     print(f"ownership {time.time()-t0:.0f}s; own share: " + ", ".join(
         f"{v[:2]} {100*share[v][i]/max(V[v].mask.sum(),1):.0f}%" for i, v in enumerate(names)), flush=True)
@@ -254,14 +293,16 @@ def main():
         two_panel([enc(V[v].cam(state[v][0]), V[v].mask) for v in pair]).save(refs[1])
         gen_p = f"{a.out}/sheets/{k:02d}_gen.png"
         if not os.path.exists(gen_p):
-            prompt = PROMPT + (STYLE if a.style else "")
+            prompt = (LOOSE if a.loose else PROMPT) + (STYLE if a.style else "")
             dt = generate(prompt, gen_p, refs + list(a.style))
             print(f"sheet {k} {pair}: generated in {dt:.0f}s", flush=True)
         for v, panel in zip(pair, panels(Image.open(gen_p))):
             ref_nc = V[v].cam(state[v][0])
-            nc, reg = take(V[v], panel, ref_nc, a.sigma)
+            nc, gm, reg = take(V[v], panel, ref_nc, a.sigma, align=not a.loose)
             i = names.index(v)
             mine = V[v].mask & (own[v] == i)
+            if a.loose:
+                mine &= gm
             nw = V[v].world(nc); nw[~mine] = 0
             painted[v] = nw.astype(np.float32)
             np.save(f"{a.out}/painted/{v}.npy", painted[v])
@@ -272,9 +313,11 @@ def main():
 
     os.makedirs(f"{a.out}/normals", exist_ok=True)
     cover = []
-    for v in names:
+    for v in (a.render.split(",") if a.render else names):
         nw, done = render_state(V, names, own, painted, v)
         nc = V[v].cam(nw); nc[~V[v].mask] = 0
+        if a.loose:
+            nc[~done] = 0      # outside every painted silhouette: not surface
         np.save(f"{a.out}/normals/{v}.npy", nc.astype(np.float32))
         enc(nc, V[v].mask).save(f"{a.out}/normals/{v}.png")
         cover.append(done[V[v].mask].mean())
