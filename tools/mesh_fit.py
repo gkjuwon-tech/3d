@@ -665,7 +665,10 @@ def main():
                     nxt = torch.where(later.any(0), later.float().argmax(0), first)
                     wn = (1 - gmar.gather(0, first[None])[0] / a.own_band).clamp(0, 1)
                     wn = torch.where(nxt != first, wn, torch.zeros_like(wn))
-                    own[0] = own[0] + wn[:, None] * (gidx[None, :] == nxt[:, None]).float()
+                    # a crossfade, not an overlay: the owner's own frame
+                    # edge (where its views stop, and where the estimator
+                    # is least sure) must not be a step either
+                    own[0] = own[0] * (1 - wn)[:, None] + wn[:, None] * (gidx[None, :] == nxt[:, None]).float()
                     print(f"detail owners: {(wn > 0).float().mean().item():.1%} of triangles in a blend band",
                           flush=True)
                 share = torch.bincount(first, minlength=len(groups)).float() / len(f)
