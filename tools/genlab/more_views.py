@@ -53,6 +53,20 @@ rows marked by the tick marks. Keep the white gutter and the tick marks. Keep th
 2:1 sheet."""
 
 
+def describe(M):
+    """camera position in words, relative to the front view"""
+    d = np.asarray(M)[:3, 2]
+    az = np.degrees(np.arctan2(d[0], -d[1]))          # 0 = front, + = orbiting to the right
+    el = np.degrees(np.arcsin(np.clip(d[2], -1, 1)))
+    side = f"orbited {abs(az):.0f} degrees to the {'RIGHT' if az >= 0 else 'LEFT'} of the front view"
+    if abs(az) < 1:
+        side = "in front"
+    height = ("level with the sculpture" if abs(el) < 1 else
+              f"raised {el:.0f} degrees ABOVE the horizon, looking down at it" if el > 0 else
+              f"lowered {-el:.0f} degrees BELOW the horizon, looking up at it")
+    return f"{side}, {height}"
+
+
 def camera(az, el):
     d = np.array([np.cos(np.radians(el)) * np.cos(np.radians(az)),
                   np.cos(np.radians(el)) * np.sin(np.radians(az)), np.sin(np.radians(el))])
@@ -69,10 +83,23 @@ def main():
     ap.add_argument("--gen", required=True)
     ap.add_argument("--refs", nargs="+", required=True)
     ap.add_argument("--tries", type=int, default=2)
+    ap.add_argument("--pairs", default=None, help="a:b,c:d,... views to add (opposite pairs)")
+    ap.add_argument("--cams", default=None, help="cameras.json holding those views' matrices")
+    ap.add_argument("--first-sheet", type=int, default=3, help="numbering of the new sheets")
     a = ap.parse_args()
     meta = json.load(open(f"{a.views}/cameras.json"))
-    for k, (az, el) in NEW.items():
-        meta["views"].setdefault(k, {"matrix_world": camera(az, el)})
+    global SHEETS, NEW
+    if a.pairs:
+        SHEETS = [tuple(p.split(":")) for p in a.pairs.split(",")]
+        src = json.load(open(a.cams))["views"]
+        for pr in SHEETS:
+            for k in pr:
+                meta["views"].setdefault(k, {"matrix_world": src[k]["matrix_world"]})
+                WORDS[k] = describe(src[k]["matrix_world"])
+        NEW = {k: None for pr in SHEETS for k in pr}
+    for k, ae in NEW.items():
+        if ae is not None:
+            meta["views"].setdefault(k, {"matrix_world": camera(*ae)})
     json.dump(meta, open(f"{a.views}/cameras.json", "w"), indent=1)
     H = np.load(a.hull); occ = H["occ"]; h = float(H["hi"]); n = occ.shape[0]
     c, X = grid(n, h)
@@ -88,10 +115,10 @@ def main():
         d = ImageDraw.Draw(im)
         for j in range(2):
             ticks(d, j * (P + GUT))
-        ref = f"{a.gen}/sheet{3+i}_ref.png"; im.save(ref)
+        ref = f"{a.gen}/sheet{a.first_sheet+i}_ref.png"; im.save(ref)
         prompt = PROMPT.format(left=WORDS[pair[0]], right=WORDS[pair[1]])
         for t in "abcd"[:a.tries]:
-            out = f"{a.gen}/sheet{3+i}_{t}.png"
+            out = f"{a.gen}/sheet{a.first_sheet+i}_{t}.png"
             if not os.path.exists(out):
                 jobs.append((prompt, out, [ref] + a.refs))
     with ThreadPoolExecutor(min(4, len(jobs)) or 1) as ex:
@@ -100,7 +127,7 @@ def main():
     for i, pair in enumerate(SHEETS):
         best = None
         for t in "abcd"[:a.tries]:
-            pans = panels(f"{a.gen}/sheet{3+i}_{t}.png")
+            pans = panels(f"{a.gen}/sheet{a.first_sheet+i}_{t}.png")
             score, info = 0, []
             for k, p in zip(pair, pans):
                 m = sil(p); b = bound[k]
@@ -108,10 +135,10 @@ def main():
                 fill = (m & b).sum() / b.sum()
                 score += fill - 3 * out_frac
                 info.append(f"{k}: fills {100*fill:.0f}% of bound, {100*out_frac:.1f}% outside")
-            print(f"sheet{3+i}_{t}: " + ";  ".join(info))
+            print(f"sheet{a.first_sheet+i}_{t}: " + ";  ".join(info))
             if best is None or score > best[0]:
                 best = (score, t, pans)
-        print(f"  -> keep sheet{3+i}_{best[1]}")
+        print(f"  -> keep sheet{a.first_sheet+i}_{best[1]}")
         for k, p in zip(pair, best[2]):
             p.save(f"{a.views}/rgb/{k}.png")
             Image.fromarray((sil(p) * 255).astype(np.uint8)).save(f"{a.views}/mask/{k}.png")
