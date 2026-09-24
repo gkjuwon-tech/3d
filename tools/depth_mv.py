@@ -387,8 +387,8 @@ def main():
                          "reason to break (both ends facing the camera, "
                          "--smooth-nz, and within --smooth-deg of each other); "
                          "0 off")
-    ap.add_argument("--smooth-nz", type=float, default=0.5)
-    ap.add_argument("--smooth-deg", type=float, default=10.0)
+    ap.add_argument("--smooth-nz", type=float, default=0.7)
+    ap.add_argument("--smooth-deg", type=float, default=5.0)
     ap.add_argument("--unique-gap", type=float, default=12.0,
                     help="voxels: the sweep's second-best depth is looked for "
                          "at least this far from its best (<view>_margin.npy)")
