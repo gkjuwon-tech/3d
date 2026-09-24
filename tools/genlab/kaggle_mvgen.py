@@ -2,13 +2,14 @@
 """Multi-view consistent generation on a Kaggle GPU: images only, no 3D.
 
 MV-Adapter (SDXL, Apache-2.0) turns one image into orthographic views around
-the vertical axis at chosen azimuths, drawn jointly so they agree; StableNormal
-(Apache-2.0 weights; Marigold as a fallback) then estimates each view's normal
-map. Everything 3D stays in this repo (stage2 reconstructs from these images).
+the vertical axis at chosen azimuths, drawn jointly so they agree. Normals are
+a separate kernel (kaggle_normals.py): installing a normal estimator's pinned
+requirements inside this one reinstalled PyTorch under a running process and
+hung it. Everything 3D stays in this repo (stage2 reconstructs from these images).
 
   push <name> --image hero.png --mask hero_mask.png --prompt "..."
   status <name>
-  pull <name>        -> data/<name>/mvgen/{view_<az>.png, normal_<az>.npy/png}
+  pull <name>        -> data/<name>/mvgen/view_s<seed>_<az>.png
 
 Run:
   python3 tools/genlab/kaggle_mvgen.py push catmv --image data/cat/gen/hero_front_a.png \
@@ -114,30 +115,7 @@ for seed in CFG["seeds"]:
     for a_, im in zip(az, out):
         im.save(f"{W}/view_s{seed}_{a_:03d}.png")
     print("views done, seed", seed, flush=True)
-del pipe; torch.cuda.empty_cache()
-
-# normals, one deterministic estimator for every view
-try:
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "git+https://github.com/Stable-X/StableNormal.git"], check=False)
-    est = torch.hub.load("Stable-X/StableNormal", "StableNormal", trust_repo=True)
-    name = "stablenormal"
-    def normal(im):
-        return np.asarray(est(im)).astype(np.float32) / 255 * 2 - 1
-except Exception as e:
-    print("StableNormal unavailable:", e, flush=True)
-    from diffusers import MarigoldNormalsPipeline
-    mp = MarigoldNormalsPipeline.from_pretrained("prs-eth/marigold-normals-v1-1", variant="fp16",
-                                                 torch_dtype=dt).to(dev)
-    name = "marigold"
-    def normal(im):
-        r = mp(im, num_inference_steps=4, ensemble_size=5)
-        return np.asarray(r.prediction[0]).astype(np.float32)
-for f in sorted(glob.glob(W + "/view_*.png")):
-    n_ = normal(Image.open(f).convert("RGB"))
-    np.save(f.replace("view_", "normal_").replace(".png", ".npy"), n_.astype(np.float16))
-    Image.fromarray(((n_ + 1) / 2 * 255).clip(0, 255).astype(np.uint8)).save(f.replace("view_", "normal_"))
-print("normals by", name, flush=True)
-open(W + "/estimator.txt", "w").write(name)
+print('all views done', flush=True)
 '''
 
 
