@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 def load_views(views, normals, res):
     meta = json.load(open(os.path.join(views, "cameras.json")))
     names = list(meta["views"])
-    M, masks, nrm = [], [], []
+    M, masks, nrm, face = [], [], [], []
     for v in names:
         m = np.asarray(Image.open(os.path.join(views, "mask", f"{v}.png")).convert("L")
                        .resize((res, res), Image.BILINEAR), np.float32) / 255
@@ -49,8 +49,10 @@ def load_views(views, normals, res):
         nw = n @ W[:3, :3].T.astype(np.float32)            # camera frame -> world
         nw /= np.linalg.norm(nw, axis=-1, keepdims=True).clip(1e-6)
         nw[m < 0.5] = 0
-        M.append(W); masks.append(m); nrm.append(nw)
-    return meta, names, np.stack(M), np.stack(masks), np.stack(nrm)
+        fz = np.clip(n[..., 2], 0, 1)                     # how squarely it faces the camera
+        fz[m < 0.5] = 0
+        M.append(W); masks.append(m); nrm.append(nw); face.append(fz)
+    return meta, names, np.stack(M), np.stack(masks), np.stack(nrm), np.stack(face)
 
 
 def clip_matrices(M, ortho, near=0.1, far=4.0):
@@ -113,6 +115,14 @@ def main():
     ap.add_argument("--w-alpha", type=float, default=1.0)
     ap.add_argument("--w-expand", type=float, default=0.1)
     ap.add_argument("--laplacian", type=float, default=0.02)
+    ap.add_argument("--select", type=float, default=8.0,
+                    help="per triangle, weight view k by (cos_k / best cos)^s; 0 = all views equal")
+    ap.add_argument("--blur", default="8,4,2,1,0",
+                    help="gaussian sigmas (px) of the target normals, in equal stages of the run")
+    ap.add_argument("--facing-pow", type=float, default=1.0,
+                    help="weight each target normal by (its facing the camera)^p; 0 = uniform")
+    ap.add_argument("--loss", default="l1", choices=["l1", "l2"],
+                    help="normal loss per pixel: l1 (robust: a wrong normal pulls less) or l2")
     ap.add_argument("--snap-every", type=int, default=50, help="steps between progress renders")
     a = ap.parse_args()
 
@@ -123,7 +133,7 @@ def main():
 
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
-    meta, names, M, masks, nrm = load_views(a.views, a.normals, a.res)
+    meta, names, M, masks, nrm, face = load_views(a.views, a.normals, a.res)
     ortho = float(meta["ortho_scale"])
     v0, f0 = carve_hull(M, masks, ortho, a.hull_res)
     write_ply(os.path.join(a.out, "init.ply"), v0, f0)
@@ -135,8 +145,30 @@ def main():
     mvp = torch.tensor(clip_matrices(M, ortho), device=dev)
     # nvdiffrast's first image row is the bottom one
     tgt_a = torch.tensor(masks[:, ::-1].copy(), device=dev)
-    tgt_n = torch.tensor(nrm[:, ::-1].copy(), device=dev)
+    # coarse to fine in the targets too: the normals blurred at first, so the
+    # masses settle before the surface chases pixel-level disagreement between
+    # views (which it otherwise fits as chips and flakes)
+    from scipy import ndimage
+    def blurred(sig):
+        if sig <= 0:
+            return nrm
+        out = np.empty_like(nrm)
+        for k in range(len(nrm)):
+            m = (masks[k] > 0.5).astype(np.float32)
+            wsum = ndimage.gaussian_filter(m, sig)
+            for c in range(3):
+                out[k, ..., c] = ndimage.gaussian_filter(nrm[k, ..., c] * m, sig) / np.maximum(wsum, 1e-6)
+            out[k] /= np.linalg.norm(out[k], axis=-1, keepdims=True).clip(1e-6)
+            out[k][m < 0.5] = 0
+        return out
+    sigmas = [float(x) for x in a.blur.split(",")]
+    levels = [torch.tensor(blurred(sg)[:, ::-1].copy(), device=dev) for sg in sigmas]
+    tgt_n = levels[0]
     obj = tgt_a > 0.5
+    # a learned normal is least reliable where the surface turns away from
+    # the camera, and there every other view sees it better
+    wgt = torch.tensor(face[:, ::-1].copy(), device=dev) ** a.facing_pow
+    view_dir = torch.tensor(M[:, :3, 2], device=dev, dtype=torch.float32)   # toward each camera
 
     def render(v, n, f):
         vh = torch.cat([v, torch.ones_like(v[:, :1])], -1)
@@ -146,7 +178,7 @@ def main():
         col, _ = dr.interpolate(n, rast, fi)
         alpha = (rast[..., 3:] > 0).float()
         out = dr.antialias(torch.cat([col, alpha], -1), rast, clip, fi)
-        return out[..., :3], out[..., 3]
+        return out[..., :3], out[..., 3], rast[..., 3].long() - 1
 
     v = torch.tensor(v0, device=dev)
     f = torch.tensor(f0, device=dev)
@@ -155,15 +187,30 @@ def main():
     v = opt.vertices
     log = []
     for i in range(a.steps):
+        tgt_n = levels[min(len(levels) - 1, int(i / a.steps * len(levels)))]
         opt.zero_grad()
         opt._lr *= a.decay
         n = calc_vertex_normals(v, f)
-        rn, ra = render(v, n, f)
+        rn, ra, tri = render(v, n, f)
         both = obj & (ra > 0.5)
+        if a.select > 0:
+            # each triangle listens mostly to the view that sees it most
+            # squarely: neighbouring views draw the same pleat a few pixels
+            # apart, and averaging them carved a zigzag between the two
+            with torch.no_grad():
+                fn = torch.nn.functional.normalize(torch.linalg.cross(
+                    v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]], dim=-1), dim=-1)
+                cosv = (fn @ view_dir.T).clamp(min=0)                 # F, C
+                sel = (cosv / cosv.max(1, keepdim=True).values.clamp(min=1e-6)) ** a.select
+                pix = sel.T[torch.arange(len(names), device=dev)[:, None, None], tri.clamp(min=0)]
+                pix = torch.where(tri >= 0, pix, torch.zeros_like(pix))
         # on colours (n + 1) / 2 and averaged over channels, as Unique3D does:
         # summed over [-1, 1] components it outweighed the silhouette 12 to 1
         # and the mesh swelled past its outline
-        l_n = ((rn - tgt_n) / 2)[both].pow(2).mean()
+        r = ((rn - tgt_n) / 2)[both]
+        w = wgt[both] * (pix[both] if a.select > 0 else 1.0)
+        per = r.pow(2).sum(-1) if a.loss == "l2" else (r.pow(2).sum(-1) + 1e-6).sqrt()
+        l_n = (per * w).sum() / w.sum().clamp(min=1e-6) / 3
         l_a = (ra - tgt_a).pow(2).mean()
         l_e = 0.5 * ((v + n).detach() - v).pow(2).mean()
         loss = a.w_normal * l_n + a.w_alpha * l_a + a.w_expand * l_e
