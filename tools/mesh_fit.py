@@ -197,6 +197,8 @@ def main():
     ap.add_argument("--detail-loss", choices=["l1", "l2", "gm"], default="l1",
                     help="detail: per-pixel normal loss. Geman-McClure stops pulling a facet "
                          "once it is 30 degrees off, so a spike, once formed, stays")
+    ap.add_argument("--chunk", type=int, default=0,
+                    help="detail: render this many views at a time, gradients summed (0 = all at once)")
     ap.add_argument("--freeze-extra", action="store_true",
                     help="extra views keep their cameras (views drawn over the mesh itself "
                          "have exact ones)")
@@ -555,15 +557,35 @@ def main():
             vv = base + d[:, None] * nb
             nn_ = calc_vertex_normals(vv, f)
             full = a.detail_views_per_step <= 0 or j % 20 == 0 or j == a.detail_steps - 1
-            idx = None if full else torch.randperm(len(names), device=dev)[:a.detail_views_per_step]
-            l_n, l_a, rn, ra, seen, both, tgt_s, O_s, TR_s = image_losses(vv, f, nn_, mvp, tgt_n, R, idx,
-                                                                          loss=a.detail_loss)
-            l_s = ((d[edges[:, 0]] - d[edges[:, 1]]) / el).pow(2).mean()
-            loss = a.w_normal * l_n + a.w_alpha * l_a + a.detail_smooth * l_s
-            loss.backward()
+            idx = torch.arange(len(names), device=dev) if full else \
+                torch.randperm(len(names), device=dev)[:a.detail_views_per_step]
+            # every view each step, rendered a chunk at a time with the
+            # gradients summed, so 36 views need no more memory than 12
+            chunks = idx.split(a.chunk) if a.chunk > 0 else [idx]
+            logging = j % 20 == 0 or j == a.detail_steps - 1
+            parts = []
+            for ci, ch in enumerate(chunks):
+                if ci:
+                    d = a.max_disp * allow * torch.tanh(h)
+                    vv = base + d[:, None] * nb
+                    nn_ = calc_vertex_normals(vv, f)
+                l_n, l_a, rn, ra, seen, both, tgt_s, O_s, TR_s = image_losses(
+                    vv, f, nn_, mvp, tgt_n, R, ch, loss=a.detail_loss)
+                frac = len(ch) / len(idx)
+                loss = frac * (a.w_normal * l_n + a.w_alpha * l_a)
+                if ci == 0:
+                    l_s = ((d[edges[:, 0]] - d[edges[:, 1]]) / el).pow(2).mean()
+                    loss = loss + a.detail_smooth * l_s
+                loss.backward()
+                if logging:
+                    with torch.no_grad():
+                        parts.append((rn.detach(), ra.detach(), seen, both, tgt_s, O_s, TR_s))
+                del rn, ra, l_n, l_a, loss
             hopt.step()
-            if j % 20 == 0 or j == a.detail_steps - 1:
+            if logging:
+                rn, ra, seen, both, tgt_s, O_s, TR_s = (torch.cat(x) for x in zip(*parts))
                 ang, iou, h_ang, h_iou = metrics(rn, ra, seen, both, tgt_s, O_s, TR_s)
+                del parts
                 print(f"detail {j:4d}  normal {ang:5.1f} deg  IoU {iou:.4f}  "
                       + (f"| held out: normal {h_ang:5.1f} deg IoU {h_iou:.4f}  " if a.holdout else "")
                       + f"disp |d| {d.abs().mean().item() / el.item():.3f} edges", flush=True)
