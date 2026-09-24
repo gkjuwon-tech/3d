@@ -200,6 +200,9 @@ def main():
     ap.add_argument("--own-cos", type=float, default=0.0,
                     help="detail: each triangle listens to one view group only, the sharpest "
                          "that sees it at a cosine above this (0 = off)")
+    ap.add_argument("--hp-world", type=float, default=0.0,
+                    help="detail: targets keep only relief finer than this (world units, gaussian "
+                         "sigma); coarser orientation comes from the settled shape (0 = off)")
     ap.add_argument("--shape-skip-zoom", action="store_true",
                     help="close-up views (frame < 0.8 x the main one) give the shape stage "
                          "their outlines only, their normals go to the detail stage")
@@ -466,6 +469,42 @@ def main():
         first = torch.where(ok.any(0), ok.float().argmax(0), gcos.argmax(0))
         return (gidx_t[None, :] == first[:, None]).float()
 
+    def gblur(x, m, sig):
+        """masked gaussian blur of (H, W, 3) x over mask m, sigma in px"""
+        r = max(1, int(3 * sig))
+        k = torch.exp(-0.5 * (torch.arange(-r, r + 1, device=dev) / sig) ** 2)
+        k = k / k.sum()
+        y = torch.cat([x * m[..., None], m[..., None]], -1).permute(2, 0, 1)[:, None]   # 4,1,H,W
+        y = torch.nn.functional.conv2d(y, k.view(1, 1, 1, -1), padding=(0, r))
+        y = torch.nn.functional.conv2d(y, k.view(1, 1, -1, 1), padding=(r, 0))
+        y = y[:, 0].permute(1, 2, 0)
+        return y[..., :3] / y[..., 3:].clamp(min=1e-6)
+
+    def high_pass(tgt, v, f, mvp):
+        """each view keeps only the relief finer than --hp-world; everything
+        coarser comes from the settled shape. A close-up's normals leaned
+        upward as a whole (the painter drew the chest seen a little from
+        below), and a surface told to tilt up everywhere while staying inside
+        its outline can only do it as a staircase: the shingled chest. The
+        detail stage should add relief to the shape, not re-argue it"""
+        n = calc_vertex_normals(v, f)
+        fi = f.int()
+        out = tgt.clone()
+        vh = torch.cat([v, torch.ones_like(v[:, :1])], -1)
+        for k in range(len(names)):
+            clip = (vh @ mvp[k].T)[None]
+            rast, _ = dr.rasterize(glctx, clip, fi, resolution=[a.res, a.res])
+            bn, _ = dr.interpolate(n, rast, fi)
+            bn, hit = bn[0], rast[0, ..., 3] > 0
+            m = (obj[k] & hit).float()
+            sig = a.hp_world / D["ortho"][k] * a.res
+            low_t = gblur(tgt[k], m, sig)
+            low_b = gblur(bn, m, sig)
+            hp = torch.nn.functional.normalize(low_b + tgt[k] - low_t, dim=-1)
+            out[k] = torch.where((m > 0)[..., None], hp, tgt[k])
+        print(f"detail targets: relief coarser than {a.hp_world} replaced by the shape's", flush=True)
+        return out
+
     def metrics(rn, ra, seen, both, tgt_n, O, TR):
         with torch.no_grad():
             angs = torch.rad2deg(torch.acos((torch.nn.functional.normalize(rn, dim=-1) * tgt_n)
@@ -553,6 +592,8 @@ def main():
             R, mvp = (x.detach() for x in cameras())
             tgt_n = torch.einsum("chwj,ckj->chwk", levels_cam[-1], R)
             tgt_n = torch.where(obj[..., None], tgt_n, torch.zeros_like(tgt_n))
+            if a.hp_world > 0:
+                tgt_n = high_pass(tgt_n, v.detach(), f, mvp)
         # finer triangles first: the shape stage keeps edges long so the mesh
         # cannot grow a fin per camera, and at that size an owl's eye was four
         # triangles wide. Each split turns every triangle into four (edge
