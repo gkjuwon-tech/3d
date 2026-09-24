@@ -65,6 +65,10 @@ def render_normals(mesh, out, margin):
                     "--mesh", mesh, "--out", out, "--res", "1024", "--samples", "8",
                     "--no-normalize", "--margin", str(margin), "--aux", "ring4"],
                    stdout=log, stderr=log, check=True)
+    subprocess.run([BLENDER, "-b", "-P", os.path.join(ROOT, "tools", "render_orthoviews.py"), "--",
+                    "--mesh", mesh, "--out", out, "--res", "1024", "--samples", "8",
+                    "--no-normalize", "--margin", str(margin), "--aux", "diagonal8", "--aux-only"],
+                   stdout=log, stderr=log, check=True)
     subprocess.run([BLENDER, "-b", "-P", os.path.join(ROOT, "tools", "exr_to_npy.py"), "--",
                     "--dir", out], stdout=log, stderr=log, check=True)
     meta = json.load(open(f"{out}/cameras.json"))
@@ -80,6 +84,21 @@ def render_normals(mesh, out, margin):
     return res
 
 
+def taubin(v, f, iters, lam=0.5, mu=-0.53):
+    """volume-preserving smoothing: keeps the large forms, drops the blotches"""
+    from scipy import sparse
+    n = len(v)
+    e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    A = sparse.coo_matrix((np.ones(2 * len(e)), (np.r_[e[:, 0], e[:, 1]], np.r_[e[:, 1], e[:, 0]])),
+                          shape=(n, n)).tocsr()
+    A.data[:] = 1.0
+    deg = np.asarray(A.sum(1)).ravel()
+    for _ in range(iters):
+        for k in (lam, mu):
+            v = v + k * (A @ v / deg[:, None] - v)
+    return v
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mesh", required=True)
@@ -88,10 +107,22 @@ def main():
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--style", nargs="*", default=[])
     ap.add_argument("--iters", type=int, default=6, help="mesh_from_normals iterations per round")
+    ap.add_argument("--pairs", default=None, help="a:b,c:d,... opposite-view sheets")
+    ap.add_argument("--presmooth", type=int, default=0, help="Taubin iterations on the input mesh")
     a = ap.parse_args()
     meta = json.load(open(f"{a.app}/cameras.json"))
     os.makedirs(a.out, exist_ok=True)
+    global PAIRS
+    if a.pairs:
+        PAIRS = [tuple(p.split(":")) for p in a.pairs.split(",")]
     mesh = a.mesh
+    if a.presmooth:
+        from eval_hull import read_ply
+        from displace import write_ply
+        v, f = read_ply(mesh)
+        v = taubin(v.astype(np.float64), f.astype(np.int64), a.presmooth)
+        mesh = f"{a.out}/start.ply"
+        write_ply(mesh, v.astype(np.float32), f.astype(np.int32))
     for r in range(a.rounds):
         rd = f"{a.out}/r{r}"
         os.makedirs(f"{rd}/normals", exist_ok=True)
