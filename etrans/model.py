@@ -194,10 +194,11 @@ class ECLIP(nn.Module):
         # "그만 쓰기" 결정은 디코더가, "어느 변수"는 변수 포인터가 맡음
         vscore, active = self.var_pointer_bonus(tgt_in, word_content)
         vs = slice(self.V0, self.V0 + E.MAX_VARS)
-        stop = torch.logsumexp(logits[..., vs], dim=-1, keepdim=True)
+        old = logits[..., vs]
+        stop = torch.logsumexp(old, dim=-1, keepdim=True)
         pointed = stop + torch.log_softmax(vscore, dim=-1)
-        logits[..., vs] = torch.where(active.unsqueeze(-1), pointed, logits[..., vs])
-        return logits
+        new_vars = torch.where(active.unsqueeze(-1), pointed, old)
+        return torch.cat([logits[..., : self.V0], new_vars, logits[..., self.V0 + E.MAX_VARS:]], dim=-1)
 
     # ------------------------------------------------------------ 결혼식장
     def text_embed(self, mem, mem_mask):
