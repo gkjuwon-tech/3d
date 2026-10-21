@@ -163,6 +163,7 @@ def main() -> None:
     ap.add_argument("--clip-weight", type=float, default=0.3)
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--subset", type=int, default=0, help="빠른 실험용: 학습 데이터 앞 N개만 사용")
     ap.add_argument("--resume", action="store_true", help="out/ckpt.pt (또는 out/model.pt) 에서 이어서 학습")
     args = ap.parse_args()
 
@@ -177,6 +178,8 @@ def main() -> None:
     val = load_or_build(f"{args.data}/val_{args.n_eval}.pt", args.n_eval, 2, False, ear_holder)
     ood = load_or_build(f"{args.data}/ood_{args.n_eval}.pt", args.n_eval, 3, True, ear_holder)
     ear_holder.clear()
+    if args.subset:
+        train = train[: args.subset]
 
     model = ECLIP()
     n_params = sum(p.numel() for p in model.parameters())
