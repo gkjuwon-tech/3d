@@ -150,6 +150,7 @@ def main() -> None:
     ap.add_argument("--clip-weight", type=float, default=0.3)
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--resume", action="store_true", help="out/ckpt.pt (또는 out/model.pt) 에서 이어서 학습")
     args = ap.parse_args()
 
     torch.set_num_threads(args.threads)
@@ -175,8 +176,23 @@ def main() -> None:
     rng = random.Random(args.seed)
 
     log = []
+    start_ep = 1
+    if args.resume:
+        if os.path.exists(f"{args.out}/ckpt.pt"):
+            ck = torch.load(f"{args.out}/ckpt.pt", weights_only=False)
+            model.load_state_dict(ck["model"])
+            opt.load_state_dict(ck["opt"])
+            sched.load_state_dict(ck["sched"])
+            start_ep, log = ck["epoch"] + 1, ck["log"]
+        else:
+            # 가중치만 남은 경우: 스케줄러를 해당 지점까지 빨리 감기 (옵티마이저 모멘텀은 새로 시작)
+            model.load_state_dict(torch.load(f"{args.out}/model.pt"))
+            start_ep = args.resume_epoch + 1 if hasattr(args, "resume_epoch") else 2
+            for _ in range((start_ep - 1) * steps_per_epoch):
+                sched.step()
+        print(f"  이어서 학습: epoch {start_ep}부터", flush=True)
     print("[3/3] 학습 시작", flush=True)
-    for ep in range(1, args.epochs + 1):
+    for ep in range(start_ep, args.epochs + 1):
         model.train()
         idx = list(range(len(train)))
         rng.shuffle(idx)
@@ -211,6 +227,8 @@ def main() -> None:
         print(json.dumps(msg, ensure_ascii=False), flush=True)
         log.append(msg)
         torch.save(model.state_dict(), f"{args.out}/model.pt")
+        torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
+                    "epoch": ep, "log": log}, f"{args.out}/ckpt.pt")
 
     final = {"val": evaluate(model, val), "ood": evaluate(model, ood)}
     with open(f"{args.out}/report.json", "w", encoding="utf-8") as f:

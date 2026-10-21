@@ -364,11 +364,15 @@ def checkpoints(tokens: Sequence[str], nums: Sequence[float], n_words: int,
     except (ELangError, IndexError):
         return out
     scale = term_scale(prog, nums)
-    e_true = energy(prog, truth, nums)
-    out["answer_plug"] = e_true <= 1e-9 * scale
-    wrong = dict(truth)
-    wrong[read_var] = truth[read_var] + max(1.0, abs(truth[read_var]) * 0.1)
-    out["wrong_plug"] = energy(prog, wrong, nums) > 1e-6
+    try:
+        # 정답에 없는 변수를 지어낸 번역은 정답 대입에서 실패로 처리
+        e_true = energy(prog, truth, nums)
+        out["answer_plug"] = e_true <= 1e-9 * scale and prog.read == [read_var]
+        wrong = dict(truth)
+        wrong[read_var] = truth[read_var] + max(1.0, abs(truth[read_var]) * 0.1)
+        out["wrong_plug"] = energy(prog, wrong, nums) > 1e-6
+    except ELangError:
+        pass
     formula_part = []
     for t in tokens:
         if t == "LBL":
