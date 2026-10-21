@@ -7,7 +7,7 @@ E-Lang: 자연어 문제를 '사연 없는' 에너지 수식으로 적는 공용
     VAR v0 INT W0  VAR v1 INT W2      # 변수 선언 + 이름표(원문 단어 포인터)
     TERM SQ SUB SUB v0 v1 N0          # (v0 - v1 - n0)^2
     TERM SQ SUB ADD v0 v1 N1          # (v0 + v1 - n1)^2
-    READ v0 W13 W14                   # 답 변수 + 질문 속 답 구절 포인터
+    READ W13 W14 v0                   # 질문 속 답 구절을 먼저 짚고, 그 구절에 맞는 변수를 고름
     EOS
 
 - 이름표를 선언 자리에 붙여야, READ 를 고를 때 질문 속 이름과 변수 이름표를 바로 대조할 수 있습니다.
@@ -133,8 +133,9 @@ def parse(tokens: Sequence[str]) -> Program:
             expr, i = _parse_expr(toks, i + 1)
             prog.terms.append(expr)
         elif kw == "READ":
-            prog.read.append(toks[i + 1])
-            prog.answer_label, i = _take_words(toks, i + 2)
+            prog.answer_label, i = _take_words(toks, i + 1)
+            prog.read.append(toks[i])
+            i += 1
         else:
             raise ELangError(f"문장 첫머리에 올 수 없는 토큰: {kw}")
     if not prog.var_types or not prog.terms or not prog.read:
@@ -256,7 +257,7 @@ def render_program(prog: Program, nums: Optional[Sequence[float]] = None,
 class GrammarState:
     """접두 토큰열을 따라가며 다음에 올 수 있는 토큰 집합을 알려주는 자동기계.
 
-    순서: (VAR 이름 타입 W+)+ -> TERM+ -> READ 변수 W+ -> EOS
+    순서: (VAR 이름 타입 W+)+ -> TERM+ -> READ W+ 변수 -> EOS
     """
 
     def __init__(self, n_nums: int, n_words: int):
@@ -299,12 +300,10 @@ class GrammarState:
             if MAX_TERM_LEN - self.term_len <= self.need + 1:
                 return self._leaf_tokens()
             return list(dict.fromkeys(BINARY_OPS + UNARY_OPS)) + self._leaf_tokens()
-        if p == "read":
-            return VARS[: self.n_vars]
         if p == "read_label":
             opts = self._words()
             if self.label_len >= 1:
-                opts = opts + ["EOS"]
+                opts = opts + VARS[: self.n_vars]
             return opts
         raise RuntimeError(p)
 
@@ -329,7 +328,9 @@ class GrammarState:
             else:
                 self.label_len += 1
         elif p == "stmt":
-            self.phase = {"TERM": "term_root", "READ": "read"}[tok]
+            if tok == "READ":
+                self.label_len = 0
+            self.phase = {"TERM": "term_root", "READ": "read_label"}[tok]
         elif p == "term_root":
             self.need, self.term_len, self.phase = 1, 1, "term"
         elif p == "term":
@@ -338,11 +339,8 @@ class GrammarState:
             if self.need == 0:
                 self.n_terms += 1
                 self.phase = "stmt"
-        elif p == "read":
-            self.label_len = 0
-            self.phase = "read_label"
         elif p == "read_label":
-            if tok == "EOS":
+            if tok in VARS:
                 self.phase = "done"
             else:
                 self.label_len += 1

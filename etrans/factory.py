@@ -386,7 +386,7 @@ def assemble(story: Story, rng: random.Random, names: List[str], ood: bool, n_di
                 toks.append(vmap[t])
             else:
                 toks.append(t)
-    toks += ["READ", vmap[story.read]] + [f"W{i}" for i in answer_label[: E.MAX_LABEL_WORDS]]
+    toks += ["READ"] + [f"W{i}" for i in answer_label[: E.MAX_LABEL_WORDS]] + [vmap[story.read]]
     toks.append("EOS")
 
     truth = {vmap[v]: float(story.values[v]) for v in story.var_types}

@@ -86,13 +86,14 @@ def greedy_decode(model: ECLIP, items: List[Dict]) -> List[List[str]]:
     model.eval()
     b = collate(items, random.Random(0))
     mem = model.memory(b["h"], b["word_id"], b["num_slot"], b["mem_mask"])
+    wv, nv = model.pointer_tables(mem, b["word_id"], b["num_slot"])
     B = len(items)
     states = [E.GrammarState(len(it["sample"].nums), len(it["sample"].words)) for it in items]
     seqs = [[E.BOS_ID] for _ in range(B)]
     done = [False] * B
     for _ in range(MAX_TGT - 1):
         tgt_in = pad([torch.tensor(s) for s in seqs], E.PAD_ID)
-        logits = model.decode_logits(tgt_in, mem, b["mem_mask"])
+        logits = model.decode_logits(tgt_in, mem, b["mem_mask"], wv, nv)
         lengths = [len(s) for s in seqs]
         for i in range(B):
             if done[i]:
@@ -214,7 +215,8 @@ def main() -> None:
             items = [train[j] for j in idx[st * args.bs: (st + 1) * args.bs]]
             b = collate(items, rng)
             mem = model.memory(b["h"], b["word_id"], b["num_slot"], b["mem_mask"])
-            logits = model.decode_logits(b["tgt"][:, :-1], mem, b["mem_mask"])
+            wv, nv = model.pointer_tables(mem, b["word_id"], b["num_slot"])
+            logits = model.decode_logits(b["tgt"][:, :-1], mem, b["mem_mask"], wv, nv)
             ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)), b["tgt"][:, 1:].reshape(-1),
                                  ignore_index=E.PAD_ID, label_smoothing=0.05)
             # CLIP: 문장 B개 vs 수식 2B개 (정답 B + 한 끗 차이 가짜 B)
@@ -234,8 +236,7 @@ def main() -> None:
             tot_clip += clip.item()
         msg = {"epoch": ep, "ce": round(tot_ce / steps_per_epoch, 4), "clip": round(tot_clip / steps_per_epoch, 4),
                "sec": round(time.time() - t0, 1)}
-        if ep % 2 == 0 or ep == args.epochs:
-            msg["val"] = {k: v for k, v in evaluate(model, val[:400]).items() if k not in ("fail_examples", "by_gen_all_pass")}
+        msg["val"] = {k: v for k, v in evaluate(model, val[:300]).items() if k not in ("fail_examples", "by_gen_all_pass")}
         print(json.dumps(msg, ensure_ascii=False), flush=True)
         log.append(msg)
         torch.save(model.state_dict(), f"{args.out}/model.pt")

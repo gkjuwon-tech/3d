@@ -97,6 +97,11 @@ class ECLIP(nn.Module):
         self.decoder = nn.TransformerDecoder(dec_layer, n_dec)
         self.out_norm = nn.LayerNorm(d)
         self.out = nn.Linear(d, V)
+        # 내용을 품은 포인터: W_k / N_k 토큰에 해당 단어·숫자의 귀 벡터를 더하고, 고를 때도 내용으로 점수를 매김
+        self.ptr_in = nn.Linear(d, d)
+        self.ptr_q = nn.Linear(d, d)
+        self.ptr_k = nn.Linear(d, d)
+        self.W0, self.N0 = E.TOK2ID["W0"], E.TOK2ID["N0"]
         # 수식 눈 + 결혼식장
         self.eye_tok = nn.Embedding(V, d)
         self.eye_depth = nn.Embedding(32, d)
@@ -111,15 +116,49 @@ class ECLIP(nn.Module):
         x = self.ear_proj(h.float()) + self.word_emb(word_id + 1) + self.num_emb(num_slot + 1)
         return self.mem_enc(x, src_key_padding_mask=~mem_mask)
 
+    # ------------------------------------------------------------ 포인터 표
+    @staticmethod
+    def _slot_mean(mem, slot, n_slots):
+        """조각(subword)들의 귀 벡터를 단어/숫자 슬롯별로 평균 -> [B, n_slots, d]"""
+        B, L, d = mem.shape
+        valid = (slot >= 0) & (slot < n_slots)
+        idx = slot.clamp(min=0, max=n_slots - 1)
+        out = torch.zeros(B, n_slots, d, dtype=mem.dtype)
+        cnt = torch.zeros(B, n_slots, 1, dtype=mem.dtype)
+        w = valid.unsqueeze(-1).to(mem.dtype)
+        out.scatter_add_(1, idx.unsqueeze(-1).expand(-1, -1, d), mem * w)
+        cnt.scatter_add_(1, idx.unsqueeze(-1), w)
+        return out / cnt.clamp(min=1.0)
+
+    def pointer_tables(self, mem, word_id, num_slot):
+        return self._slot_mean(mem, word_id, E.MAX_WORDS), self._slot_mean(mem, num_slot, E.MAX_NUMS)
+
     # ------------------------------------------------------------ 손
-    def decode_logits(self, tgt_in, mem, mem_mask):
+    def decode_logits(self, tgt_in, mem, mem_mask, word_vecs, num_vecs):
         T = tgt_in.size(1)
         pos = torch.arange(T, device=tgt_in.device)
         y = self.tok_emb(tgt_in) + self.pos_emb(pos)[None]
+        # 입력 쪽: 포인터 토큰에 가리키는 내용 더하기
+        is_w = (tgt_in >= self.W0) & (tgt_in < self.W0 + E.MAX_WORDS)
+        is_n = (tgt_in >= self.N0) & (tgt_in < self.N0 + E.MAX_NUMS)
+        wi = (tgt_in - self.W0).clamp(0, E.MAX_WORDS - 1)
+        ni = (tgt_in - self.N0).clamp(0, E.MAX_NUMS - 1)
+        w_content = torch.gather(word_vecs, 1, wi.unsqueeze(-1).expand(-1, -1, word_vecs.size(-1)))
+        n_content = torch.gather(num_vecs, 1, ni.unsqueeze(-1).expand(-1, -1, num_vecs.size(-1)))
+        y = y + self.ptr_in(w_content * is_w.unsqueeze(-1) + n_content * is_n.unsqueeze(-1))
         causal = torch.triu(torch.ones(T, T, dtype=torch.bool, device=tgt_in.device), 1)
         y = self.decoder(y, mem, tgt_mask=causal, tgt_key_padding_mask=(tgt_in == E.PAD_ID),
                          memory_key_padding_mask=~mem_mask)
-        return self.out(self.out_norm(y))
+        h = self.out_norm(y)
+        logits = self.out(h)
+        # 출력 쪽: 포인터 토큰 점수에 "지금 원하는 내용 · 그 자리 내용" 유사도를 더함
+        q = self.ptr_q(h) / math.sqrt(h.size(-1))
+        ptr_w = torch.einsum("btd,bkd->btk", q, self.ptr_k(word_vecs))
+        ptr_n = torch.einsum("btd,bkd->btk", q, self.ptr_k(num_vecs))
+        bonus = torch.zeros_like(logits)
+        bonus[..., self.W0: self.W0 + E.MAX_WORDS] = ptr_w
+        bonus[..., self.N0: self.N0 + E.MAX_NUMS] = ptr_n
+        return logits + bonus
 
     # ------------------------------------------------------------ 결혼식장
     def text_embed(self, mem, mem_mask):
