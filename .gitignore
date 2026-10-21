@@ -59,3 +59,11 @@ out/gt_samples.npz
 
 # per-model pipeline outputs (stage1 images, stage2 reconstructions)
 data/
+
+# OUROBOROS generated outputs
+ouroboros/kaggle_kernel/
+ouroboros/__pycache__/
+ouroboros/runs/
+ouroboros/*.pkl*
+ouroboros/OUROBOROS_evolved_dna_kernel.py
+ouroboros/*.jsonl
