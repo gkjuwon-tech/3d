@@ -221,7 +221,7 @@ def main() -> None:
             wv, nv, wc = model.pointer_tables(mem, b["h"], b["word_id"], b["num_slot"])
             logits = model.decode_logits(b["tgt"][:, :-1], mem, b["mem_mask"], wv, nv, wc)
             ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)), b["tgt"][:, 1:].reshape(-1),
-                                 ignore_index=E.PAD_ID, label_smoothing=0.05)
+                                 ignore_index=E.PAD_ID)  # 라벨 스무딩 없음: 후보 아닌 변수의 -1e9 점수에 확률을 나눠주면 손실이 폭발
             # CLIP: 문장 B개 vs 수식 2B개 (정답 B + 한 끗 차이 가짜 B)
             te = model.text_embed(mem, b["mem_mask"])
             fe = model.formula_embed(b["f_ids"], b["f_depth"])
