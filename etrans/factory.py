@@ -368,8 +368,8 @@ def assemble(story: Story, rng: random.Random, names: List[str], ood: bool, n_di
     for idx, key in enumerate(order):
         num_index.setdefault(key, idx)
 
-    # 변수 순서 = 꼬리표가 원문에 처음 나오는 순서 (정준형)
-    var_order = sorted(story.var_types, key=lambda v: labels[v][0])
+    # 변수 순서 = 원문에 처음 등장하는 순서 (정준형). 질문 문장을 끝까지 안 읽어도 이름을 정할 수 있게.
+    var_order = sorted(story.var_types, key=lambda v: occurrences[v][0][0])
     vmap = {v: f"v{i}" for i, v in enumerate(var_order)}
     toks = ["BOS"]
     for v in var_order:

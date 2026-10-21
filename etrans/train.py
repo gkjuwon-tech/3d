@@ -19,6 +19,7 @@ import torch.nn.functional as F
 
 import elang as E
 import factory
+from solver import solve
 from model import ECLIP, Ear, MAX_TGT, formula_depths, formula_part, mutate_formula
 
 
@@ -125,10 +126,21 @@ def evaluate(model: ECLIP, data: List[Dict], bs: int = 64) -> Dict:
                 agg[k] += v
             agg["all_pass"] += ok_all
             agg["exact_formula"] += formula_part(toks) == formula_part(s.tokens)
+            # 진짜 번역 정확도: 검수관이 번역된 수식을 직접 풀었을 때 유일한 해가 정답과 같은가
+            solved_ok = False
+            try:
+                prog = E.parse(toks)
+                r = solve(prog, s.nums)
+                if r["status"] == "unique" and r["solution"] is not None:
+                    gold = s.truth[s.read_var]
+                    solved_ok = abs(r["solution"][prog.read[0]] - gold) <= 1e-6 * max(1.0, abs(gold))
+            except Exception:
+                pass
+            agg["solved_correct"] += solved_ok
             agg["exact_full"] += toks == s.tokens
-            by_gen[s.gen][0] += ok_all
+            by_gen[s.gen][0] += solved_ok
             by_gen[s.gen][1] += 1
-            if len(examples) < 6 and not ok_all:
+            if len(examples) < 6 and not solved_ok:
                 examples.append({"text": s.text, "pred": " ".join(toks), "gold": " ".join(s.tokens)})
     n = len(data)
     res = {k: round(100.0 * v / n, 2) for k, v in agg.items()}
@@ -237,7 +249,7 @@ def main() -> None:
         r = final[split]
         print(f"\n=== {split} ===")
         print({k: v for k, v in r.items() if k not in ("fail_examples", "by_gen_all_pass")})
-        print("문제 유형별 4중 검문소 통과율:", r["by_gen_all_pass"])
+        print("문제 유형별 검수관 정답률:", r["by_gen_all_pass"])
         for ex in r["fail_examples"][:3]:
             print("  ✗", ex["text"], "\n    pred:", ex["pred"], "\n    gold:", ex["gold"])
 
