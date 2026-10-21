@@ -105,7 +105,7 @@ class ECLIP(nn.Module):
         # 변수 포인터: 답 구절 내용 vs 각 변수 이름표 내용을 직접 비교해 READ 변수 선택에 더함
         self.vp_a = nn.Linear(EAR_DIM, d)
         self.vp_v = nn.Linear(EAR_DIM, d)
-        self.vp_cos_scale = nn.Parameter(torch.tensor(10.0))  # 귀 코사인 유사도(학습 전 90%)를 기본 점수로
+        self.vp_cos_scale = nn.Parameter(torch.tensor(50.0))  # 귀 코사인 유사도(학습 전 90%)를 기본 점수로
         self.V0 = E.TOK2ID["v0"]
         self.VAR_ID, self.TERM_ID, self.READ_ID = E.TOK2ID["VAR"], E.TOK2ID["TERM"], E.TOK2ID["READ"]
         # 수식 눈 + 결혼식장
@@ -159,8 +159,8 @@ class ECLIP(nn.Module):
         cos = torch.einsum("btd,bvd->btv", F.normalize(ans_vec, dim=-1), F.normalize(var_vec, dim=-1))
         learned = torch.einsum("btd,bvd->btv", self.vp_a(ans_vec), self.vp_v(var_vec)) / math.sqrt(self.d)
         score = self.vp_cos_scale * cos + learned
-        active = (after_read & (A.sum(-1) > 0)).unsqueeze(-1).float()
-        return score * active
+        active = after_read & (A.sum(-1) > 0)
+        return score, active
 
     # ------------------------------------------------------------ 손
     def decode_logits(self, tgt_in, mem, mem_mask, word_vecs, num_vecs, word_content):
@@ -187,8 +187,12 @@ class ECLIP(nn.Module):
         bonus = torch.zeros_like(logits)
         bonus[..., self.W0: self.W0 + E.MAX_WORDS] = ptr_w
         bonus[..., self.N0: self.N0 + E.MAX_NUMS] = ptr_n
-        bonus[..., self.V0: self.V0 + E.MAX_VARS] = self.var_pointer_bonus(tgt_in, word_content)
-        return logits + bonus
+        logits = logits + bonus
+        # 답 변수를 고르는 자리에서는 디코더 습관 점수를 빼고 변수 포인터 점수만으로 고름 (순수 포인터)
+        vscore, active = self.var_pointer_bonus(tgt_in, word_content)
+        vs = slice(self.V0, self.V0 + E.MAX_VARS)
+        logits[..., vs] = torch.where(active.unsqueeze(-1), vscore, logits[..., vs])
+        return logits
 
     # ------------------------------------------------------------ 결혼식장
     def text_embed(self, mem, mem_mask):
