@@ -159,6 +159,8 @@ class ECLIP(nn.Module):
         cos = torch.einsum("btd,bvd->btv", F.normalize(ans_vec, dim=-1), F.normalize(var_vec, dim=-1))
         learned = torch.einsum("btd,bvd->btv", self.vp_a(ans_vec), self.vp_v(var_vec)) / math.sqrt(self.d)
         score = self.vp_cos_scale * cos + learned
+        declared = (M.sum(-1) > 0).unsqueeze(1)  # 이름표가 있는 변수만 후보
+        score = score.masked_fill(~declared, -1e9)
         active = after_read & (A.sum(-1) > 0)
         return score, active
 
@@ -188,10 +190,13 @@ class ECLIP(nn.Module):
         bonus[..., self.W0: self.W0 + E.MAX_WORDS] = ptr_w
         bonus[..., self.N0: self.N0 + E.MAX_NUMS] = ptr_n
         logits = logits + bonus
-        # 답 변수를 고르는 자리에서는 디코더 습관 점수를 빼고 변수 포인터 점수만으로 고름 (순수 포인터)
+        # 답 변수 선택을 두 단계로 분해: P(v_i) = P(답 구절 그만 쓰고 변수 고르기) * softmax(포인터 점수)_i
+        # "그만 쓰기" 결정은 디코더가, "어느 변수"는 변수 포인터가 맡음
         vscore, active = self.var_pointer_bonus(tgt_in, word_content)
         vs = slice(self.V0, self.V0 + E.MAX_VARS)
-        logits[..., vs] = torch.where(active.unsqueeze(-1), vscore, logits[..., vs])
+        stop = torch.logsumexp(logits[..., vs], dim=-1, keepdim=True)
+        pointed = stop + torch.log_softmax(vscore, dim=-1)
+        logits[..., vs] = torch.where(active.unsqueeze(-1), pointed, logits[..., vs])
         return logits
 
     # ------------------------------------------------------------ 결혼식장
