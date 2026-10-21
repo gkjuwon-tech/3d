@@ -86,14 +86,14 @@ def greedy_decode(model: ECLIP, items: List[Dict]) -> List[List[str]]:
     model.eval()
     b = collate(items, random.Random(0))
     mem = model.memory(b["h"], b["word_id"], b["num_slot"], b["mem_mask"])
-    wv, nv = model.pointer_tables(mem, b["word_id"], b["num_slot"])
+    wv, nv, wc = model.pointer_tables(mem, b["h"], b["word_id"], b["num_slot"])
     B = len(items)
     states = [E.GrammarState(len(it["sample"].nums), len(it["sample"].words)) for it in items]
     seqs = [[E.BOS_ID] for _ in range(B)]
     done = [False] * B
     for _ in range(MAX_TGT - 1):
         tgt_in = pad([torch.tensor(s) for s in seqs], E.PAD_ID)
-        logits = model.decode_logits(tgt_in, mem, b["mem_mask"], wv, nv)
+        logits = model.decode_logits(tgt_in, mem, b["mem_mask"], wv, nv, wc)
         lengths = [len(s) for s in seqs]
         for i in range(B):
             if done[i]:
@@ -218,8 +218,8 @@ def main() -> None:
             items = [train[j] for j in idx[st * args.bs: (st + 1) * args.bs]]
             b = collate(items, rng)
             mem = model.memory(b["h"], b["word_id"], b["num_slot"], b["mem_mask"])
-            wv, nv = model.pointer_tables(mem, b["word_id"], b["num_slot"])
-            logits = model.decode_logits(b["tgt"][:, :-1], mem, b["mem_mask"], wv, nv)
+            wv, nv, wc = model.pointer_tables(mem, b["h"], b["word_id"], b["num_slot"])
+            logits = model.decode_logits(b["tgt"][:, :-1], mem, b["mem_mask"], wv, nv, wc)
             ce = F.cross_entropy(logits.reshape(-1, logits.size(-1)), b["tgt"][:, 1:].reshape(-1),
                                  ignore_index=E.PAD_ID, label_smoothing=0.05)
             # CLIP: 문장 B개 vs 수식 2B개 (정답 B + 한 끗 차이 가짜 B)

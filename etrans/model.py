@@ -103,8 +103,9 @@ class ECLIP(nn.Module):
         self.ptr_k = nn.Linear(d, d)
         self.W0, self.N0 = E.TOK2ID["W0"], E.TOK2ID["N0"]
         # 변수 포인터: 답 구절 내용 vs 각 변수 이름표 내용을 직접 비교해 READ 변수 선택에 더함
-        self.vp_a = nn.Linear(d, d)
-        self.vp_v = nn.Linear(d, d)
+        self.vp_a = nn.Linear(EAR_DIM, d)
+        self.vp_v = nn.Linear(EAR_DIM, d)
+        self.vp_cos_scale = nn.Parameter(torch.tensor(10.0))  # 귀 코사인 유사도(학습 전 90%)를 기본 점수로
         self.V0 = E.TOK2ID["v0"]
         self.VAR_ID, self.TERM_ID, self.READ_ID = E.TOK2ID["VAR"], E.TOK2ID["TERM"], E.TOK2ID["READ"]
         # 수식 눈 + 결혼식장
@@ -135,10 +136,12 @@ class ECLIP(nn.Module):
         cnt.scatter_add_(1, idx.unsqueeze(-1), w)
         return out / cnt.clamp(min=1.0)
 
-    def pointer_tables(self, mem, word_id, num_slot):
-        return self._slot_mean(mem, word_id, E.MAX_WORDS), self._slot_mean(mem, num_slot, E.MAX_NUMS)
+    def pointer_tables(self, mem, h, word_id, num_slot):
+        """(위치 정보가 섞인 단어 벡터, 숫자 벡터, 위치 정보 없는 순수 귀 단어 벡터)"""
+        content = self._slot_mean(h.float(), word_id, E.MAX_WORDS)
+        return self._slot_mean(mem, word_id, E.MAX_WORDS), self._slot_mean(mem, num_slot, E.MAX_NUMS), content
 
-    def var_pointer_bonus(self, tgt_in, word_vecs):
+    def var_pointer_bonus(self, tgt_in, word_content):
         """READ 뒤 위치마다 [B, T, MAX_VARS] 점수. 답 구절(지금까지 짚은 W)과 변수 이름표(W)의 내용 유사도."""
         K, V = E.MAX_WORDS, E.MAX_VARS
         is_w = (tgt_in >= self.W0) & (tgt_in < self.W0 + K)
@@ -150,14 +153,17 @@ class ECLIP(nn.Module):
         var_oh = F.one_hot(var_idx.clamp(0, V - 1), V).float() * in_label
         M = torch.einsum("btv,btk->bvk", var_oh, w_oh)  # 이름표는 READ 전에 다 쓰이므로 전체 열에서 모아도 인과성 유지
         A = torch.cumsum(w_oh * after_read.unsqueeze(-1).float(), 1)
-        var_vec = (M @ word_vecs) / M.sum(-1, keepdim=True).clamp(min=1)
-        ans_vec = (A @ word_vecs) / A.sum(-1, keepdim=True).clamp(min=1)
-        score = torch.einsum("btd,bvd->btv", self.vp_a(ans_vec), self.vp_v(var_vec)) / math.sqrt(word_vecs.size(-1))
+        # 위치 정보 없는 순수 귀 벡터로 비교해야 "질문 속 유나의" 와 "앞 문장 유나는" 이 가까워짐
+        var_vec = (M @ word_content) / M.sum(-1, keepdim=True).clamp(min=1)
+        ans_vec = (A @ word_content) / A.sum(-1, keepdim=True).clamp(min=1)
+        cos = torch.einsum("btd,bvd->btv", F.normalize(ans_vec, dim=-1), F.normalize(var_vec, dim=-1))
+        learned = torch.einsum("btd,bvd->btv", self.vp_a(ans_vec), self.vp_v(var_vec)) / math.sqrt(self.d)
+        score = self.vp_cos_scale * cos + learned
         active = (after_read & (A.sum(-1) > 0)).unsqueeze(-1).float()
         return score * active
 
     # ------------------------------------------------------------ 손
-    def decode_logits(self, tgt_in, mem, mem_mask, word_vecs, num_vecs):
+    def decode_logits(self, tgt_in, mem, mem_mask, word_vecs, num_vecs, word_content):
         T = tgt_in.size(1)
         pos = torch.arange(T, device=tgt_in.device)
         y = self.tok_emb(tgt_in) + self.pos_emb(pos)[None]
@@ -181,7 +187,7 @@ class ECLIP(nn.Module):
         bonus = torch.zeros_like(logits)
         bonus[..., self.W0: self.W0 + E.MAX_WORDS] = ptr_w
         bonus[..., self.N0: self.N0 + E.MAX_NUMS] = ptr_n
-        bonus[..., self.V0: self.V0 + E.MAX_VARS] = self.var_pointer_bonus(tgt_in, word_vecs)
+        bonus[..., self.V0: self.V0 + E.MAX_VARS] = self.var_pointer_bonus(tgt_in, word_content)
         return logits + bonus
 
     # ------------------------------------------------------------ 결혼식장
