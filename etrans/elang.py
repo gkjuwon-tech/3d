@@ -4,12 +4,14 @@ E-Lang: 자연어 문제를 '사연 없는' 에너지 수식으로 적는 공용
 모델이 쓰는 형태는 전위(prefix) 토큰열입니다. 연산자마다 받는 인자 수가 정해져 있어서
 "아직 몇 칸을 더 채워야 하는지"만 세면 문법을 100% 강제할 수 있습니다.
 
-    VAR v0 INT  VAR v1 INT
+    VAR v0 INT W0  VAR v1 INT W2      # 변수 선언 + 이름표(원문 단어 포인터)
     TERM SQ SUB SUB v0 v1 N0          # (v0 - v1 - n0)^2
     TERM SQ SUB ADD v0 v1 N1          # (v0 + v1 - n1)^2
-    READ v0
-    LBL v0 W0 W5  LBL v1 W2           # 꼬리표 장부: 원문 단어를 가리키는 포인터
+    READ v0 W13 W14                   # 답 변수 + 질문 속 답 구절 포인터
     EOS
+
+- 이름표를 선언 자리에 붙여야, READ 를 고를 때 질문 속 이름과 변수 이름표를 바로 대조할 수 있습니다.
+- 추론기에게 넘길 때는 W 포인터를 모두 떼어내므로(formula_only) 장부는 추론기에 닿지 않습니다.
 
 - 수식 부분(VAR/TERM/READ)에는 원문 단어가 들어갈 자리가 없습니다. 숫자도 N_k(원문 k번째 숫자)로만
   가리키므로 사연은 구조적으로 새어 나갈 수 없습니다.
@@ -30,7 +32,7 @@ MAX_TERM_LEN = 40
 MAX_LABEL_WORDS = 6
 
 SPECIALS = ["PAD", "BOS", "EOS"]
-KEYWORDS = ["VAR", "TERM", "READ", "LBL"]
+KEYWORDS = ["VAR", "TERM", "READ"]
 TYPES = ["INT", "REAL"]
 VARS = [f"v{i}" for i in range(MAX_VARS)]
 ROOT_OPS = ["SQ", "RSQ", "ABS"]
@@ -79,7 +81,8 @@ class Program:
     var_types: List[str] = field(default_factory=list)
     terms: List[Expr] = field(default_factory=list)
     read: List[str] = field(default_factory=list)
-    labels: Dict[str, List[int]] = field(default_factory=dict)  # 변수 -> 원문 단어 인덱스들
+    labels: Dict[str, List[int]] = field(default_factory=dict)  # 변수 -> 이름표 (원문 단어 인덱스들)
+    answer_label: List[int] = field(default_factory=list)       # 질문 속 답 구절
 
 
 class ELangError(ValueError):
@@ -102,6 +105,14 @@ def _parse_expr(toks: List[str], i: int) -> Tuple[Expr, int]:
     raise ELangError(f"식 자리에 올 수 없는 토큰: {t}")
 
 
+def _take_words(toks: List[str], j: int) -> Tuple[List[int], int]:
+    idxs = []
+    while j < len(toks) and toks[j] in WORDS:
+        idxs.append(int(toks[j][1:]))
+        j += 1
+    return idxs, j
+
+
 def parse(tokens: Sequence[str]) -> Program:
     toks = [t for t in tokens if t not in ("BOS", "PAD")]
     if toks and toks[-1] == "EOS":
@@ -115,7 +126,7 @@ def parse(tokens: Sequence[str]) -> Program:
             if name != f"v{len(prog.var_types)}" or typ not in TYPES:
                 raise ELangError(f"잘못된 VAR 선언: {name} {typ}")
             prog.var_types.append(typ)
-            i += 3
+            prog.labels[name], i = _take_words(toks, i + 3)
         elif kw == "TERM":
             if toks[i + 1] not in ROOT_OPS:
                 raise ELangError("TERM 의 뿌리는 SQ/RSQ/ABS 여야 합니다")
@@ -123,16 +134,7 @@ def parse(tokens: Sequence[str]) -> Program:
             prog.terms.append(expr)
         elif kw == "READ":
             prog.read.append(toks[i + 1])
-            i += 2
-        elif kw == "LBL":
-            name = toks[i + 1]
-            j = i + 2
-            idxs = []
-            while j < len(toks) and toks[j] in WORDS:
-                idxs.append(int(toks[j][1:]))
-                j += 1
-            prog.labels[name] = idxs
-            i = j
+            prog.answer_label, i = _take_words(toks, i + 2)
         else:
             raise ELangError(f"문장 첫머리에 올 수 없는 토큰: {kw}")
     if not prog.var_types or not prog.terms or not prog.read:
@@ -143,6 +145,11 @@ def parse(tokens: Sequence[str]) -> Program:
             if leaf in VARS and leaf not in declared:
                 raise ELangError(f"선언 안 된 변수 {leaf}")
     return prog
+
+
+def formula_only(tokens: Sequence[str]) -> List[str]:
+    """추론기에게 넘길 순수 수식: 장부 포인터(W)와 특수 토큰을 모두 떼어낸 토큰열."""
+    return [t for t in tokens if t not in WORDS and t not in ("BOS", "EOS", "PAD")]
 
 
 def _leaves(e: Expr):
@@ -237,9 +244,11 @@ def render_program(prog: Program, nums: Optional[Sequence[float]] = None,
     lines.append("READ " + ", ".join(prog.read))
     if prog.labels:
         lines.append("--- 꼬리표 장부 (추론기는 못 봄) ---")
+        show = lambda idxs: " ".join(words[i] for i in idxs if i < len(words)) if words else str(idxs)
         for v, idxs in prog.labels.items():
-            label = " ".join(words[i] for i in idxs if words and i < len(words)) if words else str(idxs)
-            lines.append(f"{v} = {label}")
+            lines.append(f"{v} = {show(idxs)}")
+        if prog.answer_label:
+            lines.append(f"답 구절 = {show(prog.answer_label)}")
     return "\n".join(lines)
 
 
@@ -247,7 +256,7 @@ def render_program(prog: Program, nums: Optional[Sequence[float]] = None,
 class GrammarState:
     """접두 토큰열을 따라가며 다음에 올 수 있는 토큰 집합을 알려주는 자동기계.
 
-    순서: VAR+ -> TERM+ -> READ -> LBL(선언 순서대로 모든 변수) -> EOS
+    순서: (VAR 이름 타입 W+)+ -> TERM+ -> READ 변수 W+ -> EOS
     """
 
     def __init__(self, n_nums: int, n_words: int):
@@ -258,11 +267,13 @@ class GrammarState:
         self.n_terms = 0
         self.need = 0       # 현재 TERM 식에서 아직 채워야 할 칸 수
         self.term_len = 0
-        self.n_labeled = 0
         self.label_len = 0
 
     def _leaf_tokens(self) -> List[str]:
         return VARS[: self.n_vars] + NUMS[: self.n_nums] + list(CONSTS)
+
+    def _words(self) -> List[str]:
+        return WORDS[: self.n_words] if self.label_len < MAX_LABEL_WORDS else []
 
     def allowed(self) -> List[str]:
         p = self.phase
@@ -274,14 +285,13 @@ class GrammarState:
             return [f"v{self.n_vars}"]
         if p == "var_type":
             return TYPES
-        if p == "stmt":
-            opts = []
-            if self.n_terms == 0 and self.n_vars < MAX_VARS:
-                opts.append("VAR")
-            opts.append("TERM")
-            if self.n_terms >= 1:
-                opts.append("READ")
+        if p == "var_label":
+            opts = self._words()
+            if self.label_len >= 1:
+                opts = opts + (["VAR"] if self.n_vars < MAX_VARS else []) + ["TERM"]
             return opts
+        if p == "stmt":
+            return ["TERM", "READ"]
         if p == "term_root":
             return ROOT_OPS
         if p == "term":
@@ -291,14 +301,10 @@ class GrammarState:
             return list(dict.fromkeys(BINARY_OPS + UNARY_OPS)) + self._leaf_tokens()
         if p == "read":
             return VARS[: self.n_vars]
-        if p == "lbl_kw":
-            return ["LBL"]
-        if p == "lbl_name":
-            return [f"v{self.n_labeled}"]
-        if p == "lbl_words":
-            opts = WORDS[: self.n_words] if self.label_len < MAX_LABEL_WORDS else []
+        if p == "read_label":
+            opts = self._words()
             if self.label_len >= 1:
-                opts = opts + (["LBL"] if self.n_labeled < self.n_vars else ["EOS"])
+                opts = opts + ["EOS"]
             return opts
         raise RuntimeError(p)
 
@@ -313,9 +319,17 @@ class GrammarState:
             self.phase = "var_type"
         elif p == "var_type":
             self.n_vars += 1
-            self.phase = "stmt"
+            self.label_len = 0
+            self.phase = "var_label"
+        elif p == "var_label":
+            if tok == "VAR":
+                self.phase = "var_name"
+            elif tok == "TERM":
+                self.phase = "term_root"
+            else:
+                self.label_len += 1
         elif p == "stmt":
-            self.phase = {"VAR": "var_name", "TERM": "term_root", "READ": "read"}[tok]
+            self.phase = {"TERM": "term_root", "READ": "read"}[tok]
         elif p == "term_root":
             self.need, self.term_len, self.phase = 1, 1, "term"
         elif p == "term":
@@ -325,17 +339,10 @@ class GrammarState:
                 self.n_terms += 1
                 self.phase = "stmt"
         elif p == "read":
-            self.phase = "lbl_kw"
-        elif p == "lbl_kw":
-            self.phase = "lbl_name"
-        elif p == "lbl_name":
-            self.n_labeled += 1
             self.label_len = 0
-            self.phase = "lbl_words"
-        elif p == "lbl_words":
-            if tok == "LBL":
-                self.phase = "lbl_name"
-            elif tok == "EOS":
+            self.phase = "read_label"
+        elif p == "read_label":
+            if tok == "EOS":
                 self.phase = "done"
             else:
                 self.label_len += 1
@@ -373,10 +380,13 @@ def checkpoints(tokens: Sequence[str], nums: Sequence[float], n_words: int,
         out["wrong_plug"] = energy(prog, wrong, nums) > 1e-6
     except ELangError:
         pass
-    formula_part = []
+    in_term, leak = False, False
     for t in tokens:
-        if t == "LBL":
-            break
-        formula_part.append(t)
-    out["no_leak"] = not any(t in WORDS for t in formula_part)
+        if t == "TERM":
+            in_term = True
+        elif t in ("READ", "VAR"):
+            in_term = False
+        elif in_term and t in WORDS:
+            leak = True
+    out["no_leak"] = not leak
     return out

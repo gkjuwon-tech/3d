@@ -38,6 +38,7 @@ def translate(text: str, model: ECLIP, ear: Ear) -> str:
     lines += ["", "📒 꼬리표 장부 (역번역 전용):"]
     for v, idxs in prog.labels.items():
         lines.append(f"  {v} = " + " ".join(words[i] for i in idxs if i < len(words)))
+    lines.append("  답 구절 = " + " ".join(words[i] for i in prog.answer_label if i < len(words)))
     res = solve(prog, nums)
     lines += ["", f"👮 검수관: {res['status']}"]
     if res["solution"] is not None:

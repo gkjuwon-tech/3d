@@ -74,13 +74,8 @@ def formula_depths(tokens: Sequence[str]) -> List[int]:
 
 
 def formula_part(tokens: Sequence[str]) -> List[str]:
-    out = []
-    for t in tokens:
-        if t == "LBL" or t == "EOS":
-            break
-        if t != "BOS":
-            out.append(t)
-    return out
+    """CLIP 수식 눈이 보는 부분 = 추론기가 받는 순수 수식 (장부 포인터 제거)."""
+    return E.formula_only(tokens)
 
 
 class ECLIP(nn.Module):

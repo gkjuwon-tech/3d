@@ -87,7 +87,8 @@ def announce(prog: E.Program, sol: Dict[str, float], words: Sequence[str]) -> st
     var = prog.read[0]
     val = sol[var]
     sval = str(int(round(val))) if abs(val - round(val)) < 1e-9 else f"{val:.4g}"
-    label = " ".join(words[i] for i in prog.labels.get(var, []) if i < len(words)).strip()
+    idxs = prog.answer_label or prog.labels.get(var, [])
+    label = " ".join(words[i] for i in idxs if i < len(words)).strip()
     if not label:
         return f"사용자님 문제의 답은 {sval}입니다."
     if label.endswith(("는", "은", "가", "이")):

@@ -161,7 +161,7 @@ def g_combo(rng, names, items, ood) -> Story:
     f1 = f"[[X:{X}]] {{#a}}개와 [[Y:{Y}]] {{#b}}개의 값은 {{#t1}}원이다."
     f2 = f"{X} {{#c}}개와 {Y} {{#d}}개를 사면 {{#t2}}원이다." if not ood else f"{X} {{#c}}개에 {Y} {{#d}}개를 더해 사니 {{#t2}}원을 냈다."
     read = rng.choice(["X", "Y"])
-    q = f"{(X if read == 'X' else Y)} 한 개의 값은 얼마인가?"
+    q = f"[[{read}:{(X if read == 'X' else Y)} 한 개의 값은]] 얼마인가?"
     facts = [Fact(f1, [["SQ", "SUB", "ADD", "MUL", "#a", "X", "MUL", "#b", "Y", "#t1"]]),
              Fact(f2, [["SQ", "SUB", "ADD", "MUL", "#c", "X", "MUL", "#d", "Y", "#t2"]])]
     return Story(facts, q, read, {"X": "INT", "Y": "INT"},
@@ -177,7 +177,7 @@ def g_age(rng, names, items, ood) -> Story:
     f1 = f"[[A:{josa(A, '은')}]] [[B:{B}보다]] {{#d}}살 많다."
     f2 = f"{{#n}}년 뒤에는 {A}의 나이가 {B}의 나이의 {{#k}}배가 된다." if not ood else f"지금부터 {{#n}}년이 흐르면 {A}의 나이는 {B} 나이의 {{#k}}배가 된다."
     read = rng.choice(["A", "B"])
-    q = f"지금 {(A if read == 'A' else B)}의 나이는 몇 살인가?"
+    q = f"지금 [[{read}:{(A if read == 'A' else B)}의 나이는]] 몇 살인가?"
     facts = [Fact(f1, [["SQ", "SUB", "SUB", "A", "B", "#d"]]),
              Fact(f2, [["SQ", "SUB", "ADD", "A", "#n", "MUL", "#k", "ADD", "B", "#n"]])]
     return Story(facts, q, read, {"A": "INT", "B": "INT"}, {"#d": d, "#n": n, "#k": k, "A": a, "B": b},
@@ -257,7 +257,7 @@ def g_chain(rng, names, items, ood) -> Story:
     f2 = f"{josa(B, '은')} [[C:{C}보다]] {it} {{#d}}개를 더 가지고 있다."
     f3 = f"{josa(C, '은')} {josa(it, '을')} {{#c}}개 가지고 있다."
     read = rng.choice(["A", "B"])
-    q = f"{(A if read == 'A' else B)}의 {josa(it, '은')} 몇 개인가?"
+    q = f"[[{read}:{(A if read == 'A' else B)}의 {josa(it, '은')}]] 몇 개인가?"
     facts = [Fact(f1, [["SQ", "SUB", "A", "MUL", "#k", "B"]]), Fact(f2, [["SQ", "SUB", "SUB", "B", "C", "#d"]]),
              Fact(f3, [["SQ", "SUB", "C", "#c"]])]
     if ood:
@@ -272,7 +272,7 @@ def g_rect(rng, names, items, ood) -> Story:
     f = "직사각형의 [[W:가로는]] [[H:세로보다]] {#d}cm 길고, 둘레는 {#p}cm이다." if not ood else \
         "어떤 직사각형의 둘레가 {#p}cm인데, [[W:가로가]] [[H:세로보다]] {#d}cm 더 길다."
     read = rng.choice(["W", "H"])
-    q = "가로의 길이는 몇 cm인가?" if read == "W" else "세로의 길이는 몇 cm인가?"
+    q = "[[W:가로의 길이는]] 몇 cm인가?" if read == "W" else "[[H:세로의 길이는]] 몇 cm인가?"
     return Story([Fact(f, [["SQ", "SUB", "SUB", "W", "H", "#d"], ["SQ", "SUB", "MUL", "C2", "ADD", "W", "H", "#p"]])],
                  q, read, {"W": "INT", "H": "INT"}, {"#d": d, "#p": 2 * (w + h), "W": w, "H": h}, level=2, gen="rect")
 
@@ -350,8 +350,11 @@ def assemble(story: Story, rng: random.Random, names: List[str], ood: bool, n_di
         pos = m.end()
         glue = True
     text = " ".join(clean_words)
-    # 이름표: 답 변수는 질문 문장 속 구절(마지막 등장), 나머지는 처음 등장한 구절
-    labels = {v: (occ[-1] if v == story.read else occ[0]) for v, occ in occurrences.items()}
+    # 이름표 = 변수가 처음 등장한 구절, 답 구절 = 답 변수의 마지막 등장(대개 질문 문장)
+    if story.read not in occurrences:
+        return None
+    labels = {v: occ[0] for v, occ in occurrences.items()}
+    answer_label = occurrences[story.read][-1]
     words = E.split_words(text)
     if len(words) > E.MAX_WORDS:
         return None
@@ -373,7 +376,7 @@ def assemble(story: Story, rng: random.Random, names: List[str], ood: bool, n_di
     vmap = {v: f"v{i}" for i, v in enumerate(var_order)}
     toks = ["BOS"]
     for v in var_order:
-        toks += ["VAR", vmap[v], story.var_types[v]]
+        toks += ["VAR", vmap[v], story.var_types[v]] + [f"W{i}" for i in labels[v][: E.MAX_LABEL_WORDS]]
     for term in term_list:
         toks.append("TERM")
         for t in term:
@@ -383,9 +386,7 @@ def assemble(story: Story, rng: random.Random, names: List[str], ood: bool, n_di
                 toks.append(vmap[t])
             else:
                 toks.append(t)
-    toks += ["READ", vmap[story.read]]
-    for v in var_order:
-        toks += ["LBL", vmap[v]] + [f"W{i}" for i in labels[v][: E.MAX_LABEL_WORDS]]
+    toks += ["READ", vmap[story.read]] + [f"W{i}" for i in answer_label[: E.MAX_LABEL_WORDS]]
     toks.append("EOS")
 
     truth = {vmap[v]: float(story.values[v]) for v in story.var_types}
